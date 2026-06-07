@@ -1,14 +1,10 @@
 {
   "name": "juicer",
   "private": true,
-  "workspaces": ["apps/*"],
+  "workspaces": ["apps/desktop"],
   "scripts": {
-    "dev": "concurrently \"pnpm --filter editor dev\" \"pnpm --filter mcp-server dev\"",
-    "build": "pnpm --filter editor build && pnpm --filter mcp-server build",
-    "editor": "pnpm --filter editor dev",
-    "mcp": "pnpm --filter mcp-server dev"
-  },
-  "devDependencies": {
-    "concurrently": "^8.2.2"
+    "dev": "pnpm --filter juicer-desktop tauri dev",
+    "build": "pnpm --filter juicer-desktop tauri build",
+    "ui": "pnpm --filter juicer-desktop dev"
   }
 }

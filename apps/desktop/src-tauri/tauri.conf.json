@@ -1,0 +1,45 @@
+{
+  "productName": "Juicer",
+  "version": "0.1.0",
+  "identifier": "studio.juicer.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Juicer",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "dmg",
+    "icon": ["icons/icon.icns"],
+    "category": "Graphics",
+    "shortDescription": "Product demo animation studio",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true,
+      "sidecar": false
+    }
+  }
+}

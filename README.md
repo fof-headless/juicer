@@ -1,158 +1,169 @@
 # Juicer ⚡
 
-**A free, web-based product demo animation studio** — build animations from your HTML/React components and brand assets in 3D space, with Blender-like keyframe control, and let Claude drive it through MCP.
-
-Think of it as the love child of Blender's animation system, the browser's HTML rendering, and Premiere Pro's timeline — except it's free, code-first, and AI-controllable.
+**Native Mac app for product demo animations.** Uses Blender's Eevee GPU renderer as the actual rendering engine — not a browser canvas, not WebGL. Real 3D, real keyframes, real render quality. Free.
 
 ---
 
-## Why this exists
+## The concept
 
-You build product UI in HTML/React. When you need a demo video, you either:
-- screen-record (rigid, can't restyle, can't re-compose), or
-- rebuild everything in Premiere/After Effects (expensive, disconnected from your real components).
+You build product UI in HTML/React. You want a demo video. You don't want to:
+- screen-record (rigid, can't restyle or recompose)
+- rebuild in Premiere/After Effects (expensive, disconnected from your real components)
+- deal with Blender's painful MCP addon setup
 
-Juicer lets you take the *actual visual elements* of your product, drop them into a 3D scene as planes/objects, keyframe them on a real timeline, and let Claude rearrange and animate them in 3D space — then record the result to video.
+Juicer takes your **actual HTML components**, captures them pixel-perfect via macOS native WebKit, maps them as GPU textures onto Blender planes, and gives you a clean UI to position, keyframe, and render — all controlled by Claude Desktop through MCP.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────┐     stdio (MCP)      ┌──────────────────┐
-│  Claude Desktop  │ ◄──────────────────► │   MCP Server     │
-└─────────────────┘                       │  (apps/mcp-server)│
-                                          └────────┬─────────┘
-                                                   │ WebSocket :3001
-                                                   ▼
-                                          ┌──────────────────┐
-                                          │   Editor (web)   │
-                                          │  (apps/editor)   │
-                                          │                  │
-                                          │  React Three     │
-                                          │  Fiber viewport  │
-                                          │  + Theatre.js    │
-                                          │    timeline      │
-                                          └──────────────────┘
+┌─────────────────┐    stdio MCP     ┌──────────────────────────────────┐
+│  Claude Desktop  │ ◄──────────────► │         Juicer.app               │
+└─────────────────┘                   │  ┌────────────────────────────┐  │
+                                      │  │  Tauri (Rust native shell)  │  │
+                                      │  │  • Manages Blender process  │  │
+                                      │  │  • Runs MCP server inline   │  │
+                                      │  │  • HTML→PNG via WebKit      │  │
+                                      │  └──────────┬─────────────────┘  │
+                                      │             │ TCP :6789           │
+                                      │  ┌──────────▼─────────────────┐  │
+                                      │  │  Blender (headless)         │  │
+                                      │  │  juicer_bridge.py           │  │
+                                      │  │  • Eevee GPU renderer       │  │
+                                      │  │  • Real keyframe system     │  │
+                                      │  │  • MP4 / PNG sequence out   │  │
+                                      │  └────────────────────────────┘  │
+                                      └──────────────────────────────────┘
 ```
 
-| Layer | Tech | Role |
-|---|---|---|
-| Editor UI | React + Vite | Panels, outliner, properties (Blender-style) |
-| 3D Viewport | React Three Fiber (Three.js) | Render HTML planes & primitives in 3D |
-| **Timeline / keyframes** | **Theatre.js Studio** | The Blender-like animation editor — keyframes, curves, sequencing, all in the browser |
-| HTML → 3D | SVG `foreignObject` → CanvasTexture | Renders your HTML as a texture on a 3D plane |
-| Video export | Canvas `captureStream` + MediaRecorder | Records the viewport to WebM |
-| AI control | `@modelcontextprotocol/sdk` | Claude adds/moves/animates elements |
-
-### Why Theatre.js?
-The hardest part of "Blender for the web" is a real keyframe editor. **Theatre.js Studio** already is exactly that — it ships a dockable timeline with keyframes, easing curves, and a sequence player that works on any JS object. We bind each scene element to a Theatre object, so Claude (or you) just sets values at times and it interpolates. We didn't reinvent the timeline; we reused the best one that exists.
-
----
-
-## What we reused (your "clone Blender, reuse components" idea)
-
-Cloning Blender's C++ source wouldn't help here — it's a desktop OpenGL app, not web. Instead we reuse the **web-native equivalents** of each Blender subsystem:
-
-| Blender subsystem | Web equivalent we use |
+| Layer | What it is |
 |---|---|
-| Viewport / OpenGL | Three.js / React Three Fiber |
-| Dope sheet / Graph editor | Theatre.js Studio |
-| Outliner | Custom React tree (`apps/editor/src/outliner`) |
-| Properties (N-panel) | Custom React panel (`apps/editor/src/properties`) |
-| Transform gizmos | drei `TransformControls` |
-| Python API + addons | MCP server (Claude as the scripting layer) |
-| Render/output | MediaRecorder canvas capture |
+| **Juicer.app** | Tauri 2 native Mac app — no Electron, no bundled Chromium, ~8MB overhead |
+| **UI** | React (in macOS WebView) — outliner, properties, HTML importer, keyframe panel |
+| **Blender bridge** | Python TCP server running *inside* Blender's interpreter |
+| **Renderer** | Blender Eevee (GPU, real-time quality) or Cycles (path tracing) |
+| **HTML capture** | Swift binary using WKWebView offscreen — full CSS3, custom fonts, zero deps |
+| **MCP** | Built into the Tauri process (stdin/stdout JSON-RPC, no separate server) |
 
 ---
 
-## Getting started
+## Prerequisites
 
 ```bash
-# Install (uses pnpm workspaces — npm/yarn also work)
-pnpm install
+# 1. Xcode CLI tools (NO full Xcode needed — just the CLI)
+xcode-select --install
 
-# Run editor + MCP server together
-pnpm dev
+# 2. Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Or separately:
-pnpm editor   # → http://localhost:5173
-pnpm mcp      # → MCP stdio + WebSocket :3001
+# 3. Tauri CLI
+cargo install tauri-cli --version "^2.0"
+
+# 4. Node + pnpm
+brew install node pnpm
+
+# 5. Blender 4.0+ (Eevee Next renderer)
+brew install --cask blender
+# or download from blender.org
 ```
-
-Open http://localhost:5173. The Theatre.js Studio timeline appears at the bottom/side of the screen automatically.
 
 ---
 
-## Connecting Claude Desktop (the part that's a pain with blender-mcp — made simple here)
+## Build & run
 
-Add this to your Claude Desktop config:
+```bash
+# Install JS deps
+pnpm install
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+# Build the HTML capture helper (Swift, compiles in ~5s)
+swiftc apps/desktop/tools/html-capture/main.swift \
+    -o apps/desktop/src-tauri/bin/juicer-html-capture \
+    -framework WebKit -framework AppKit
 
+# Dev mode (hot-reload UI + Rust backend)
+pnpm dev
+
+# Production build → Juicer.app + DMG
+pnpm build
+```
+
+---
+
+## Connect Claude Desktop
+
+The MCP server is built into Juicer.app itself — no separate process. Add to Claude Desktop config:
+
+**`~/Library/Application Support/Claude/claude_desktop_config.json`**
 ```json
 {
   "mcpServers": {
     "juicer": {
-      "command": "node",
-      "args": ["/absolute/path/to/juicer/apps/mcp-server/dist/index.js"]
+      "command": "/Applications/Juicer.app/Contents/MacOS/juicer",
+      "args": ["--mcp"]
     }
   }
 }
 ```
 
-Then `pnpm --filter mcp-server build` once. Restart Claude Desktop.
-
-That's it — no Python, no Blender addon install, no port juggling. The MCP server boots its own WebSocket bridge; the editor auto-connects when you open it (green badge bottom-right).
-
-> See [`claude_desktop_config.example.json`](./claude_desktop_config.example.json) for a copy-paste version.
+> During dev, use the compiled binary path: `target/release/juicer`
 
 ---
 
-## Using it with Claude
+## Using with Claude
 
-Once connected, ask Claude things like:
+With Blender connected and Juicer running, ask Claude:
 
-- *"Add my pricing card HTML as a plane and place it center-stage"*
-- *"Arrange a product demo layout titled 'Juicer' with a purple accent"*
-- *"Move the title up and fade it in over the first 2 seconds"*
-- *"What's in the scene right now?"*
+- *"Set up a dark product demo layout with my brand color #6644ff and title 'Acme'"*
+- *"Add a plane at position 0,0,0 and apply this HTML to it: `<div...>`"*
+- *"Set a keyframe on Title at frame 1 with location [0, -3, 0] and at frame 30 with location [0, 0, 0]"*
+- *"Render the animation from frame 1 to 300 at 30fps to /tmp/demo.mp4"*
 
-Claude calls these MCP tools:
+### MCP tools
 
-| Tool | What it does |
+| Tool | What Blender does |
 |---|---|
-| `get_scene` | Read current scene state |
-| `add_element` | Add box / sphere / text / **html-plane** / image-plane |
-| `update_element` | Move, restyle, change content |
-| `remove_element` | Delete |
-| `select_element` | Highlight + focus properties |
-| `play_animation` / `pause_animation` / `seek_animation` | Drive the timeline |
-| `arrange_demo_layout` | One-shot cinematic demo composition |
-| `create_intro_animation` | Guided keyframe intro |
+| `get_scene` | Returns all Blender objects with transforms + keyframes |
+| `add_element` | `bpy.ops.mesh.primitive_*_add`, text objects, image planes |
+| `update_element` | Set location/rotation/scale/visibility/material |
+| `remove_element` | `bpy.data.objects.remove` |
+| `set_keyframe` | `obj.keyframe_insert(data_path=..., frame=...)` — Blender's native keyframe system |
+| `play_animation` / `seek_animation` | Advance Blender's scene frame |
+| `render_frame` | `bpy.ops.render.render(write_still=True)` via Eevee |
+| `render_animation` | `bpy.ops.render.render(animation=True)` → MP4 |
+| `arrange_demo_layout` | Multi-op: background, title, content plane, accent geometry |
 
 ---
 
-## Workflow
+## HTML → Blender workflow
 
-1. **Import** — paste HTML, drop an image, or drop a `.html` file into the left panel.
-2. **Compose** — drag elements in 3D with the gizmo, or let Claude arrange them.
-3. **Animate** — in the Theatre.js Studio panel, click the ◆ next to any property to keyframe it. Scrub the playhead, change values, keyframe again.
-4. **Record** — set FPS + duration in the Export panel, hit Record. It plays the timeline and saves a WebM.
+1. Paste your component's rendered HTML in the "HTML → 3D Plane" panel
+2. Click **Capture** — the Swift helper renders it at your chosen resolution using macOS WebKit
+3. The PNG is automatically applied as a texture on a new Blender plane
+4. Position it in 3D using the Properties panel or via Claude
+5. Keyframe the position/opacity for animation
+6. Render
 
----
-
-## Roadmap / not-yet-done
-
-- [ ] Live React component embedding (currently HTML-string → texture; full DOM-in-3D via `@react-three/drei` `<Html>` is wired but not keyframe-recordable yet)
-- [ ] Camera keyframing as a first-class Theatre object
-- [ ] GIF / MP4 export (currently WebM; transcode via ffmpeg.wasm)
-- [ ] Per-element easing presets exposed in properties panel
-- [ ] Scene save/load to JSON
+The capture is done in a native `WKWebView` offscreen window — it supports full CSS including `backdrop-filter`, CSS variables, custom Google Fonts (if loaded), SVG, etc.
 
 ---
 
-## License
+## Why Tauri, not Electron
 
-Free and open. Build your demos, keep your money.
+| | Electron | Tauri |
+|---|---|---|
+| Bundle size | ~85MB (bundled Chromium) | ~8MB (uses system WebView) |
+| Memory | ~150MB at idle | ~20MB at idle |
+| macOS WebKit | No | **Yes — uses native Safari engine** |
+| Rust backend | No | **Yes — direct process management, no Node overhead** |
+
+---
+
+## Roadmap
+
+- [ ] Embed Blender's OOTB viewport directly (requires window-mode Blender build — possible via XPC on Mac)
+- [ ] Camera keyframing as a first-class MCP tool
+- [ ] Eevee real-time preview streamed to the viewport panel (render to shared memory)
+- [ ] Scene save/load to `.juicer` JSON
+- [ ] ProRes / Apple Animation codec export (via Blender's ffmpeg backend)
+- [ ] Multiple sheets / sequences (intro → demo → outro)
