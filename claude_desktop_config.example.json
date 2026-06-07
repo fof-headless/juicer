@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "juicer": {
+      "command": "node",
+      "args": ["/absolute/path/to/juicer/apps/mcp-server/dist/index.js"]
+    }
+  }
+}

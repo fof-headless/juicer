@@ -1,0 +1,105 @@
+.recorder {
+  background: #141418;
+  color: #c8c8d4;
+  font-family: 'Inter', 'Segoe UI', sans-serif;
+  font-size: 12px;
+}
+
+.recorder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #1c1c24;
+  border-bottom: 1px solid #2a2a38;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8888aa;
+}
+
+.recorder-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recorder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recorder-label {
+  color: #666677;
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.recorder-select, .recorder-num {
+  background: #1e1e2a;
+  border: 1px solid #2a2a3a;
+  border-radius: 4px;
+  color: #c8c8d4;
+  padding: 4px 6px;
+  font-size: 11px;
+  outline: none;
+}
+
+.recorder-select:focus, .recorder-num:focus {
+  border-color: #6644ff;
+}
+
+.recorder-num { width: 60px; text-align: right; }
+.recorder-unit { color: #666677; }
+.recorder-note { color: #666677; font-size: 11px; }
+
+.recorder-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.recorder-btn.start { background: #cc3344; color: white; }
+.recorder-btn.start:hover { background: #dd4455; }
+.recorder-btn.stop { background: #333344; color: #cc3344; border: 1px solid #cc3344; }
+.recorder-btn.processing { background: #2a2a3a; color: #666677; cursor: not-allowed; }
+
+.recorder-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #cc3344;
+  font-size: 11px;
+}
+
+.recorder-dot {
+  width: 8px;
+  height: 8px;
+  background: #cc3344;
+  border-radius: 50%;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+.recorder-hint {
+  color: #444455;
+  font-size: 10px;
+  line-height: 1.5;
+  border-top: 1px solid #1e1e28;
+  padding-top: 8px;
+}

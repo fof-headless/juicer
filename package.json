@@ -1,0 +1,14 @@
+{
+  "name": "juicer",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter editor dev\" \"pnpm --filter mcp-server dev\"",
+    "build": "pnpm --filter editor build && pnpm --filter mcp-server build",
+    "editor": "pnpm --filter editor dev",
+    "mcp": "pnpm --filter mcp-server dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
