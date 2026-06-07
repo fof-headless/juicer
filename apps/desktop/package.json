@@ -7,7 +7,7 @@
     "dev": "vite --port 1420",
     "build": "tsc && vite build",
     "helpers": "bash tools/build-helpers.sh",
-    "tauri": "tauri"
+    "tauri": "pnpm exec tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
