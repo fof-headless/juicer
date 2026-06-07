@@ -1,37 +1,27 @@
-/// MCP server running inside the Tauri process.
-///
-/// Claude Desktop connects via stdio. The server translates tool calls
-/// into JSON commands forwarded to the Blender bridge.
-///
-/// Because Tauri owns the process, the MCP server runs as a Tokio task
-/// reading stdin / writing stdout — no separate process needed.
+//! MCP server (stdio) for Claude Desktop.
+//!
+//! Operates directly on the native scene — no IPC, no Blender, no Python.
+//! Run via `juicer --mcp`. Claude adds elements, sets keyframes, renders.
 
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
-use tauri::AppHandle;
-use crate::BridgeState;
 
-pub async fn run_mcp_server(bridge: BridgeState, _app: AppHandle) -> Result<()> {
-    // MCP over stdio — read JSON-RPC lines from stdin, write to stdout
+use crate::scene::Element;
+use crate::{apply_patch, parse_easing, parse_keyvalue, parse_kind, AppState};
+use crate::render::Renderer;
+use crate::video;
+use std::sync::Arc;
+
+pub async fn run_stdio_server(state: Arc<AppState>) -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
-    // Send MCP initialize response capability advertisement
-    let caps = json!({
-        "jsonrpc": "2.0",
-        "id": 0,
-        "result": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": "juicer", "version": "0.1.0" }
-        }
-    });
-
     for line in stdin.lock().lines() {
         let line = line?;
-        if line.trim().is_empty() { continue; }
-
+        if line.trim().is_empty() {
+            continue;
+        }
         let req: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
@@ -41,29 +31,30 @@ pub async fn run_mcp_server(bridge: BridgeState, _app: AppHandle) -> Result<()> 
         let method = req["method"].as_str().unwrap_or("");
 
         let response = match method {
-            "initialize" => caps.clone(),
-            "tools/list" => {
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "tools": tool_definitions() }
-                })
-            }
+            "initialize" => json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "juicer", "version": "0.1.0" }
+                }
+            }),
+            "notifications/initialized" => continue,
+            "tools/list" => json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": { "tools": tool_definitions() }
+            }),
             "tools/call" => {
                 let tool = req["params"]["name"].as_str().unwrap_or("");
-                let args = &req["params"]["arguments"];
-                let result = handle_tool_call(tool, args, &bridge).await;
+                let args = req["params"]["arguments"].clone();
+                let text = handle_tool(tool, &args, &state).await;
                 json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "content": [{ "type": "text", "text": result }]
-                    }
+                    "jsonrpc": "2.0", "id": id,
+                    "result": { "content": [{ "type": "text", "text": text }] }
                 })
             }
             _ => json!({
-                "jsonrpc": "2.0",
-                "id": id,
+                "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32601, "message": "Method not found" }
             }),
         };
@@ -73,164 +64,224 @@ pub async fn run_mcp_server(bridge: BridgeState, _app: AppHandle) -> Result<()> 
         stdout.write_all(out.as_bytes())?;
         stdout.flush()?;
     }
-
     Ok(())
 }
 
-async fn handle_tool_call(tool: &str, args: &Value, bridge: &BridgeState) -> String {
-    let cmd = match tool {
-        "get_scene" => json!({ "op": "get_scene" }),
-
-        "add_element" => json!({
-            "op": "add_object",
-            "name": args["name"].as_str().unwrap_or("Object"),
-            "kind": args["type"].as_str().unwrap_or("box"),
-            "location": args.get("position").cloned().unwrap_or(json!([0,0,0])),
-            "rotation": args.get("rotation").cloned().unwrap_or(json!([0,0,0])),
-            "scale": args.get("scale").cloned().unwrap_or(json!([1,1,1])),
-            "color": args.get("color").cloned().unwrap_or(json!("#4488ff")),
-            "image_path": args.get("image_path"),
-            "text": args.get("textContent"),
-            "width": args.get("width").cloned().unwrap_or(json!(2.0)),
-            "height": args.get("height").cloned().unwrap_or(json!(2.0)),
-        }),
-
-        "update_element" => json!({
-            "op": "update_object",
-            "name": args["name"],
-            "location": args.get("position"),
-            "rotation": args.get("rotation"),
-            "scale": args.get("scale"),
-            "color": args.get("color"),
-            "visible": args.get("visible"),
-        }),
-
-        "remove_element" => json!({
-            "op": "remove_object",
-            "name": args["name"],
-        }),
-
-        "set_keyframe" => json!({
-            "op": "set_keyframe",
-            "name": args["name"],
-            "frame": args["frame"],
-            "property": args["property"],
-            "value": args["value"],
-        }),
-
-        "play_animation" => json!({ "op": "play" }),
-        "pause_animation" => json!({ "op": "pause" }),
-        "seek_animation" => json!({ "op": "seek", "frame": args["frame"] }),
-
-        "render_frame" => json!({
-            "op": "render_frame",
-            "frame": args.get("frame").cloned().unwrap_or(json!(1)),
-            "output_path": args.get("output_path").cloned().unwrap_or(json!("/tmp/juicer_render.png")),
-        }),
-
-        "render_animation" => json!({
-            "op": "render_animation",
-            "output_path": args.get("output_path").cloned().unwrap_or(json!("/tmp/juicer_")),
-            "start": args.get("start").cloned().unwrap_or(json!(1)),
-            "end": args.get("end").cloned().unwrap_or(json!(250)),
-            "fps": args.get("fps").cloned().unwrap_or(json!(30)),
-            "format": args.get("format").cloned().unwrap_or(json!("FFMPEG")),
-        }),
-
-        "set_scene_fps" => json!({
-            "op": "set_fps",
-            "fps": args["fps"],
-        }),
-
-        "set_render_resolution" => json!({
-            "op": "set_resolution",
-            "width": args["width"],
-            "height": args["height"],
-        }),
-
-        "set_background" => json!({
-            "op": "set_background",
-            "color": args.get("color").cloned().unwrap_or(json!([0.05, 0.05, 0.1, 1.0])),
-        }),
-
-        "arrange_demo_layout" => {
-            // High-level composite command — build multiple ops
-            return build_demo_layout(args, bridge).await;
+async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String {
+    match tool {
+        "get_scene" => {
+            let scene = state.scene.lock().await;
+            serde_json::to_string_pretty(&*scene).unwrap_or_default()
         }
 
-        _ => return format!("Unknown tool: {tool}"),
-    };
+        "add_element" => {
+            let mut scene = state.scene.lock().await;
+            let id = scene.alloc_id();
+            let kind = parse_kind(args["type"].as_str());
+            let name = args["name"].as_str().unwrap_or("Element").to_string();
+            let mut el = Element::new(id.clone(), name, kind);
+            apply_patch(&mut el, args);
+            if let Some(p) = args.get("position").and_then(|v| v.as_array()) {
+                el.position = vec3(p, el.position);
+            }
+            scene.elements.push(el);
+            format!("Added element '{id}'")
+        }
 
-    let mut b = bridge.lock().await;
-    match b.send_command(&cmd.to_string()).await {
-        Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_default(),
-        Err(e) => format!("Error: {e}"),
+        "update_element" => {
+            let mut scene = state.scene.lock().await;
+            let name = args["name"].as_str().or(args["id"].as_str()).unwrap_or("");
+            match scene.element_mut(name) {
+                Some(el) => { apply_patch(el, args); format!("Updated '{name}'") }
+                None => format!("Element '{name}' not found"),
+            }
+        }
+
+        "remove_element" => {
+            let mut scene = state.scene.lock().await;
+            let name = args["name"].as_str().or(args["id"].as_str()).unwrap_or("");
+            if scene.remove(name) { format!("Removed '{name}'") } else { format!("'{name}' not found") }
+        }
+
+        "set_keyframe" => {
+            let mut scene = state.scene.lock().await;
+            let name = args["name"].as_str().or(args["id"].as_str()).unwrap_or("");
+            let frame = args["frame"].as_f64().unwrap_or(1.0) as f32;
+            let property = args["property"].as_str().unwrap_or("position").to_string();
+            let ease = parse_easing(args["easing"].as_str());
+            let kv = match parse_keyvalue(&property, &args["value"]) {
+                Ok(v) => v,
+                Err(e) => return format!("Bad keyframe value: {e}"),
+            };
+            match scene.element_mut(name) {
+                Some(el) => { el.track_mut(&property).insert(frame, kv, ease); format!("Keyframed '{name}' {property} @ frame {frame}") }
+                None => format!("Element '{name}' not found"),
+            }
+        }
+
+        "set_camera" => {
+            let mut scene = state.scene.lock().await;
+            if let Some(p) = args.get("position").and_then(|v| v.as_array()) {
+                scene.camera.position = vec3(p, scene.camera.position);
+            }
+            if let Some(t) = args.get("target").and_then(|v| v.as_array()) {
+                scene.camera.target = vec3(t, scene.camera.target);
+            }
+            if let Some(f) = args["fov_deg"].as_f64() { scene.camera.fov_deg = f as f32; }
+            "Camera updated".into()
+        }
+
+        "set_keyframe_camera" => {
+            let mut scene = state.scene.lock().await;
+            let frame = args["frame"].as_f64().unwrap_or(1.0) as f32;
+            let property = args["property"].as_str().unwrap_or("position").to_string();
+            let ease = parse_easing(args["easing"].as_str());
+            let kv = match parse_keyvalue(&property, &args["value"]) {
+                Ok(v) => v,
+                Err(e) => return format!("Bad value: {e}"),
+            };
+            let track = if let Some(nt) = scene.camera.tracks.iter_mut().find(|t| t.property == property) {
+                &mut nt.track
+            } else {
+                scene.camera.tracks.push(crate::scene::NamedTrack { property: property.clone(), track: Default::default() });
+                &mut scene.camera.tracks.last_mut().unwrap().track
+            };
+            track.insert(frame, kv, ease);
+            format!("Camera {property} keyframed @ {frame}")
+        }
+
+        "set_render_settings" => {
+            let mut scene = state.scene.lock().await;
+            if let Some(w) = args["width"].as_u64() { scene.render.width = w as u32; }
+            if let Some(h) = args["height"].as_u64() { scene.render.height = h as u32; }
+            if let Some(f) = args["fps"].as_u64() { scene.render.fps = f as u32; }
+            if let Some(s) = args["frame_start"].as_u64() { scene.render.frame_start = s as u32; }
+            if let Some(e) = args["frame_end"].as_u64() { scene.render.frame_end = e as u32; }
+            if let Some(bg) = args.get("background").and_then(|v| v.as_array()) {
+                if bg.len() == 4 {
+                    scene.render.background = [
+                        bg[0].as_f64().unwrap_or(0.0) as f32,
+                        bg[1].as_f64().unwrap_or(0.0) as f32,
+                        bg[2].as_f64().unwrap_or(0.0) as f32,
+                        bg[3].as_f64().unwrap_or(1.0) as f32,
+                    ];
+                }
+            }
+            "Render settings updated".into()
+        }
+
+        "render_frame" => {
+            let frame = args["frame"].as_f64().unwrap_or(1.0) as f32;
+            let out = args["output_path"].as_str().unwrap_or("/tmp/juicer_render.png").to_string();
+            let scene = state.scene.lock().await.clone();
+            let mut rg = state.renderer.lock().await;
+            if rg.is_none() {
+                match Renderer::new() {
+                    Ok(r) => *rg = Some(r),
+                    Err(e) => return format!("GPU init failed: {e}"),
+                }
+            }
+            match rg.as_mut().unwrap().render_to_png(&scene, frame, &out) {
+                Ok(()) => format!("Rendered frame {frame} → {out}"),
+                Err(e) => format!("Render error: {e}"),
+            }
+        }
+
+        "render_animation" => {
+            let out = args["output_path"].as_str().unwrap_or("/tmp/juicer_demo").to_string();
+            let scene = state.scene.lock().await.clone();
+            let mut rg = state.renderer.lock().await;
+            if rg.is_none() {
+                match Renderer::new() {
+                    Ok(r) => *rg = Some(r),
+                    Err(e) => return format!("GPU init failed: {e}"),
+                }
+            }
+            match video::render_animation(rg.as_mut().unwrap(), &scene, &out) {
+                Ok(path) => format!("Rendered animation → {path}"),
+                Err(e) => format!("Render error: {e}"),
+            }
+        }
+
+        "arrange_demo_layout" => arrange_demo_layout(args, state).await,
+
+        _ => format!("Unknown tool: {tool}"),
     }
 }
 
-async fn build_demo_layout(args: &Value, bridge: &BridgeState) -> String {
-    let color = args["accentColor"].as_str().unwrap_or("#6644ff");
-    let title = args["title"].as_str().unwrap_or("Your Product");
-    let _bg_style = args["backgroundStyle"].as_str().unwrap_or("dark");
+async fn arrange_demo_layout(args: &Value, state: &Arc<AppState>) -> String {
+    let color = args["accentColor"].as_str().unwrap_or("#6644ff").to_string();
+    let title = args["title"].as_str().unwrap_or("Your Product").to_string();
 
-    let ops: Vec<Value> = vec![
-        // Dark background plane
-        json!({ "op": "set_background", "color": [0.05, 0.05, 0.08, 1.0] }),
-        // Title text
-        json!({ "op": "add_object", "kind": "text", "name": "Title",
-                 "text": title, "location": [0, 1.5, 0], "rotation": [0,0,0],
-                 "scale": [1,1,1], "color": color }),
-        // Content plane (empty, user fills with HTML capture)
-        json!({ "op": "add_object", "kind": "plane", "name": "ContentPlane",
-                 "location": [0, 0, 0], "rotation": [1.5708, 0, 0],
-                 "scale": [3.5, 2.2, 1], "color": "#1a1a2e" }),
-        // Decorative accent box left
-        json!({ "op": "add_object", "kind": "box", "name": "AccentL",
-                 "location": [-2.5, 0, -0.1], "rotation": [0,0,0],
-                 "scale": [0.05, 2.0, 0.05], "color": color }),
-        // Decorative accent box right
-        json!({ "op": "add_object", "kind": "box", "name": "AccentR",
-                 "location": [2.5, 0, -0.1], "rotation": [0,0,0],
-                 "scale": [0.05, 2.0, 0.05], "color": color }),
-    ];
+    let mut scene = state.scene.lock().await;
+    scene.render.background = [0.03, 0.03, 0.06, 1.0];
 
-    let mut results = Vec::new();
-    for op in ops {
-        let mut b = bridge.lock().await;
-        match b.send_command(&op.to_string()).await {
-            Ok(v) => results.push(v),
-            Err(e) => results.push(json!({ "error": e.to_string() })),
-        }
-    }
+    // Content plane (user maps captured HTML onto this)
+    let id_plane = scene.alloc_id();
+    let mut plane = Element::new(id_plane.clone(), "ContentPlane".into(), crate::scene::ElementKind::Plane);
+    plane.position = [0.0, 0.4, 0.0];
+    plane.width = 4.0;
+    plane.height = 2.4;
+    plane.color = "#10101e".into();
+    scene.elements.push(plane);
+
+    // Left accent bar
+    let id_l = scene.alloc_id();
+    let mut barl = Element::new(id_l, "AccentL".into(), crate::scene::ElementKind::Box);
+    barl.position = [-2.4, 0.4, -0.1];
+    barl.scale = [0.06, 2.4, 0.06];
+    barl.color = color.clone();
+    scene.elements.push(barl);
+
+    // Right accent bar
+    let id_r = scene.alloc_id();
+    let mut barr = Element::new(id_r, "AccentR".into(), crate::scene::ElementKind::Box);
+    barr.position = [2.4, 0.4, -0.1];
+    barr.scale = [0.06, 2.4, 0.06];
+    barr.color = color.clone();
+    scene.elements.push(barr);
 
     format!(
-        "Created demo layout: title '{title}', content plane, accent bars (color: {color}).\n\nNext steps:\n- Use capture_html to render your brand HTML to a PNG, then use add_element with image_path to map it onto ContentPlane\n- Set keyframes with set_keyframe to animate position/opacity\n- Render with render_animation\n\nResults: {}",
-        serde_json::to_string_pretty(&results).unwrap_or_default()
+        "Created '{title}' demo layout: ContentPlane (id {id_plane}), two accent bars in {color}.\n\n\
+         Next:\n\
+         1. Use the HTML importer (or capture_html tool) to render your brand HTML to a PNG.\n\
+         2. update_element ContentPlane with image_path=<that png>.\n\
+         3. set_keyframe on ContentPlane: frame 1 opacity 0 + position [0,-1,0], frame 30 opacity 1 + position [0,0.4,0].\n\
+         4. render_animation to export MP4."
     )
+}
+
+fn vec3(arr: &[Value], fallback: [f32; 3]) -> [f32; 3] {
+    if arr.len() != 3 { return fallback; }
+    [
+        arr[0].as_f64().unwrap_or(fallback[0] as f64) as f32,
+        arr[1].as_f64().unwrap_or(fallback[1] as f64) as f32,
+        arr[2].as_f64().unwrap_or(fallback[2] as f64) as f32,
+    ]
 }
 
 fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "get_scene",
-            "description": "Get all objects in the current Blender scene — names, types, positions, keyframes.",
+            "description": "Get the full Juicer scene — all elements, transforms, keyframes, camera, and render settings.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
             "name": "add_element",
-            "description": "Add a 3D object to the scene. Types: box, sphere, plane, cylinder, text, light. Use 'plane' with image_path to display an image (e.g. captured HTML).",
+            "description": "Add an element. Types: plane (flat quad for HTML/images), box, sphere. Use plane + image_path to show captured HTML/brand visuals.",
             "inputSchema": {
                 "type": "object",
                 "required": ["type", "name"],
                 "properties": {
-                    "type": { "type": "string", "enum": ["box", "sphere", "plane", "cylinder", "text", "light"] },
+                    "type": { "type": "string", "enum": ["plane", "box", "sphere"] },
                     "name": { "type": "string" },
-                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "[x, y, z] in Blender world units" },
-                    "rotation": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "[rx, ry, rz] in radians" },
+                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "rotation": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Euler XYZ radians" },
                     "scale": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
-                    "color": { "type": "string", "description": "Hex color e.g. #ff4488" },
-                    "image_path": { "type": "string", "description": "Absolute path to PNG/JPG to use as texture on a plane" },
-                    "textContent": { "type": "string", "description": "Text string for text objects" },
+                    "color": { "type": "string", "description": "Hex #rrggbb" },
+                    "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "image_path": { "type": "string", "description": "PNG/JPG to texture a plane" },
                     "width": { "type": "number" },
                     "height": { "type": "number" }
                 }
@@ -238,119 +289,110 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "update_element",
-            "description": "Move, scale, rotate, recolor, or hide an existing scene object by Blender object name.",
+            "description": "Modify an existing element by name: move, rotate, scale, recolor, set opacity/visibility, swap image_path.",
             "inputSchema": {
                 "type": "object",
                 "required": ["name"],
                 "properties": {
                     "name": { "type": "string" },
-                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
-                    "rotation": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
-                    "scale": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "position": { "type": "array", "items": { "type": "number" } },
+                    "rotation": { "type": "array", "items": { "type": "number" } },
+                    "scale": { "type": "array", "items": { "type": "number" } },
                     "color": { "type": "string" },
-                    "visible": { "type": "boolean" }
+                    "opacity": { "type": "number" },
+                    "visible": { "type": "boolean" },
+                    "image_path": { "type": "string" }
                 }
             }
         }),
         json!({
             "name": "remove_element",
-            "description": "Delete a scene object by name.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["name"],
-                "properties": { "name": { "type": "string" } }
-            }
+            "description": "Delete an element by name.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } }
         }),
         json!({
             "name": "set_keyframe",
-            "description": "Set a keyframe on an object property at a specific frame. This uses Blender's native keyframe system.",
+            "description": "Insert a keyframe on an element. Animate position/rotation/scale (vec3) or opacity (number) over frames. Easing: linear, ease-in, ease-out, ease-in-out, step.",
             "inputSchema": {
                 "type": "object",
-                "required": ["name", "frame", "property"],
+                "required": ["name", "frame", "property", "value"],
                 "properties": {
-                    "name": { "type": "string", "description": "Object name" },
-                    "frame": { "type": "number", "description": "Frame number (e.g. 1, 30, 60)" },
-                    "property": { "type": "string", "enum": ["location", "rotation_euler", "scale", "color", "alpha"], "description": "Which property to keyframe" },
-                    "value": { "description": "Value to set. Array of 3 for location/rotation/scale, number for alpha." }
+                    "name": { "type": "string" },
+                    "frame": { "type": "number" },
+                    "property": { "type": "string", "enum": ["position", "rotation", "scale", "opacity"] },
+                    "value": { "description": "[x,y,z] for position/rotation/scale, or a number for opacity" },
+                    "easing": { "type": "string", "enum": ["linear", "ease-in", "ease-out", "ease-in-out", "step"] }
                 }
             }
         }),
         json!({
-            "name": "play_animation",
-            "description": "Start playing the animation timeline in the Blender viewport.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }),
-        json!({
-            "name": "pause_animation",
-            "description": "Pause animation playback.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }),
-        json!({
-            "name": "seek_animation",
-            "description": "Jump to a specific frame.",
+            "name": "set_camera",
+            "description": "Set the camera position, look-at target, and field of view.",
             "inputSchema": {
                 "type": "object",
-                "required": ["frame"],
-                "properties": { "frame": { "type": "number" } }
+                "properties": {
+                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "target": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "fov_deg": { "type": "number" }
+                }
+            }
+        }),
+        json!({
+            "name": "set_keyframe_camera",
+            "description": "Keyframe the camera for cinematic moves. property: position or target.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["frame", "property", "value"],
+                "properties": {
+                    "frame": { "type": "number" },
+                    "property": { "type": "string", "enum": ["position", "target"] },
+                    "value": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "easing": { "type": "string", "enum": ["linear", "ease-in", "ease-out", "ease-in-out", "step"] }
+                }
+            }
+        }),
+        json!({
+            "name": "set_render_settings",
+            "description": "Set resolution, fps, frame range, and background color.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "width": { "type": "number" },
+                    "height": { "type": "number" },
+                    "fps": { "type": "number" },
+                    "frame_start": { "type": "number" },
+                    "frame_end": { "type": "number" },
+                    "background": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[r,g,b,a] 0-1" }
+                }
             }
         }),
         json!({
             "name": "render_frame",
-            "description": "Render a single frame using Blender's Eevee GPU renderer. Returns path to PNG.",
+            "description": "Render a single frame to PNG using the native GPU renderer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "frame": { "type": "number", "description": "Frame to render (default: current frame)" },
-                    "output_path": { "type": "string", "description": "Output PNG path (default: /tmp/juicer_render.png)" }
+                    "frame": { "type": "number" },
+                    "output_path": { "type": "string" }
                 }
             }
         }),
         json!({
             "name": "render_animation",
-            "description": "Render the full animation to video using Blender's Eevee GPU renderer. Outputs MP4/WebM/ProRes.",
+            "description": "Render the full frame range to an MP4 video using the native GPU renderer.",
             "inputSchema": {
                 "type": "object",
-                "properties": {
-                    "output_path": { "type": "string", "description": "Output path prefix e.g. /tmp/juicer_demo" },
-                    "start": { "type": "number", "description": "Start frame (default: 1)" },
-                    "end": { "type": "number", "description": "End frame (default: 250 = ~8s at 30fps)" },
-                    "fps": { "type": "number", "description": "Frames per second (default: 30)" },
-                    "format": { "type": "string", "enum": ["FFMPEG", "PNG"], "description": "FFMPEG = MP4 video, PNG = image sequence" }
-                }
-            }
-        }),
-        json!({
-            "name": "set_render_resolution",
-            "description": "Set the render output resolution.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["width", "height"],
-                "properties": {
-                    "width": { "type": "number", "description": "e.g. 1920" },
-                    "height": { "type": "number", "description": "e.g. 1080" }
-                }
-            }
-        }),
-        json!({
-            "name": "set_background",
-            "description": "Set the scene background color (RGBA 0-1).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "color": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[r, g, b, a] each 0-1" }
-                }
+                "properties": { "output_path": { "type": "string", "description": "Output path, .mp4 appended if missing" } }
             }
         }),
         json!({
             "name": "arrange_demo_layout",
-            "description": "One-shot command: creates a cinematic product demo layout with title, content plane, and accent elements. Best starting point for a new demo.",
+            "description": "One-shot: build a starter product-demo composition (content plane + accent bars + dark background). Best first call for a new demo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": { "type": "string" },
-                    "subtitle": { "type": "string" },
-                    "accentColor": { "type": "string", "description": "Brand accent color hex" },
-                    "backgroundStyle": { "type": "string", "enum": ["dark", "light", "gradient"] }
+                    "accentColor": { "type": "string" }
                 }
             }
         }),

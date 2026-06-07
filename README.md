@@ -1,100 +1,103 @@
 # Juicer ⚡
 
-**Native Mac app for product demo animations.** Uses Blender's Eevee GPU renderer as the actual rendering engine — not a browser canvas, not WebGL. Real 3D, real keyframes, real render quality. Free.
+**A free, self-contained native Mac app for product-demo animations.** Bring your HTML/React components and brand visuals into a 3D scene, keyframe them like in Blender, and render to MP4 — driven by you or by Claude over MCP.
+
+No Blender. No Python. No browser engine doing the rendering. One `.app`.
 
 ---
 
-## The concept
+## What changed (and why)
 
-You build product UI in HTML/React. You want a demo video. You don't want to:
-- screen-record (rigid, can't restyle or recompose)
-- rebuild in Premiere/After Effects (expensive, disconnected from your real components)
-- deal with Blender's painful MCP addon setup
+Earlier drafts leaned on Blender (heavy external dependency, GPLv3, a Python socket bridge) or on a browser/WebGL stack (heavy node_modules, not native). Both were wrong for this.
 
-Juicer takes your **actual HTML components**, captures them pixel-perfect via macOS native WebKit, maps them as GPU textures onto Blender planes, and gives you a clean UI to position, keyframe, and render — all controlled by Claude Desktop through MCP.
+Juicer now has its **own native rendering engine** written in Rust with `wgpu` (→ Metal on macOS). For the actual use case — HTML/image panels and shapes moving through 3D space with keyframes and camera moves — you don't need Blender's renderer at all. You need a lean, fast, self-contained engine. That's what this is.
+
+### Quality tiers
+
+| Mode | Status | Renderer | For |
+|---|---|---|---|
+| **Lite** | ✅ **built** | Native wgpu (Metal) | HTML/image panels + shapes in 3D, keyframes, camera moves — Apple-keynote-style demos |
+| Standard | planned | wgpu + glTF/PBR | Real 3D product models with materials |
+| Pro | planned | Cycles/Blender bridge | Photoreal / path-traced cinematics |
+
+You asked for all three eventually; **Lite is implemented now.**
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────┐    stdio MCP     ┌──────────────────────────────────┐
-│  Claude Desktop  │ ◄──────────────► │         Juicer.app               │
-└─────────────────┘                   │  ┌────────────────────────────┐  │
-                                      │  │  Tauri (Rust native shell)  │  │
-                                      │  │  • Manages Blender process  │  │
-                                      │  │  • Runs MCP server inline   │  │
-                                      │  │  • HTML→PNG via WebKit      │  │
-                                      │  └──────────┬─────────────────┘  │
-                                      │             │ TCP :6789           │
-                                      │  ┌──────────▼─────────────────┐  │
-                                      │  │  Blender (headless)         │  │
-                                      │  │  juicer_bridge.py           │  │
-                                      │  │  • Eevee GPU renderer       │  │
-                                      │  │  • Real keyframe system     │  │
-                                      │  │  • MP4 / PNG sequence out   │  │
-                                      │  └────────────────────────────┘  │
-                                      └──────────────────────────────────┘
+┌─────────────────┐   stdio MCP    ┌────────────────────────────────────┐
+│  Claude Desktop  │ ◄────────────► │            Juicer.app              │
+└─────────────────┘  (juicer --mcp) │  ┌──────────────────────────────┐  │
+                                    │  │ Tauri 2 (Rust)                │  │
+                                    │  │  • Scene model (scene.rs)     │  │
+                                    │  │  • Keyframe engine (anim.rs)  │  │
+                                    │  │  • wgpu renderer (render/)    │  │
+                                    │  │  • MCP server (mcp.rs)        │  │
+                                    │  └──────────────────────────────┘  │
+                                    │  React UI in native WebView         │
+                                    └──────────────────────────────────┘
+                                          │                    │
+                              juicer-html-capture        juicer-encoder
+                              (WKWebView → PNG)        (PNG seq → MP4, AVFoundation)
 ```
 
-| Layer | What it is |
-|---|---|
-| **Juicer.app** | Tauri 2 native Mac app — no Electron, no bundled Chromium, ~8MB overhead |
-| **UI** | React (in macOS WebView) — outliner, properties, HTML importer, keyframe panel |
-| **Blender bridge** | Python TCP server running *inside* Blender's interpreter |
-| **Renderer** | Blender Eevee (GPU, real-time quality) or Cycles (path tracing) |
-| **HTML capture** | Swift binary using WKWebView offscreen — full CSS3, custom fonts, zero deps |
-| **MCP** | Built into the Tauri process (stdin/stdout JSON-RPC, no separate server) |
+Everything in one process. Claude talks to the scene **directly** — no IPC hop, no socket bridge.
+
+| Concern | Blender's subsystem | Juicer's native equivalent |
+|---|---|---|
+| 3D rendering | Eevee/OpenGL | `wgpu` (Metal) — `render/mod.rs` + `shader.wgsl` |
+| Keyframes / F-curves | Animation system | `anim.rs` — tracks, easing, interpolation |
+| Object/data model | DNA/RNA | `scene.rs` — elements, camera, lights |
+| Python API + addons | bpy | MCP server — Claude is the scripting layer |
+| HTML → texture | (none) | `juicer-html-capture` (native WKWebView) |
+| Video output | ffmpeg | `juicer-encoder` (native AVFoundation, no ffmpeg) |
 
 ---
 
 ## Prerequisites
 
 ```bash
-# 1. Xcode CLI tools (NO full Xcode needed — just the CLI)
+# Xcode CLI tools ONLY — you do NOT need the full Xcode app
 xcode-select --install
 
-# 2. Rust
+# Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# 3. Tauri CLI
 cargo install tauri-cli --version "^2.0"
 
-# 4. Node + pnpm
+# Node + pnpm
 brew install node pnpm
-
-# 5. Blender 4.0+ (Eevee Next renderer)
-brew install --cask blender
-# or download from blender.org
 ```
+
+That's the whole toolchain. No Blender, no Python.
 
 ---
 
 ## Build & run
 
 ```bash
-# Install JS deps
 pnpm install
 
-# Build the HTML capture helper (Swift, compiles in ~5s)
-swiftc apps/desktop/tools/html-capture/main.swift \
-    -o apps/desktop/src-tauri/bin/juicer-html-capture \
-    -framework WebKit -framework AppKit
+# Build the two native helper binaries (compiles in ~5s with swiftc)
+pnpm --filter juicer-desktop helpers
 
-# Dev mode (hot-reload UI + Rust backend)
+# Dev mode (hot-reload UI + Rust)
 pnpm dev
 
-# Production build → Juicer.app + DMG
+# Production: Juicer.app + DMG
 pnpm build
 ```
+
+> First run: `cargo tauri icon path/to/logo.png` generates app icons referenced in `tauri.conf.json`.
 
 ---
 
 ## Connect Claude Desktop
 
-The MCP server is built into Juicer.app itself — no separate process. Add to Claude Desktop config:
+The MCP server *is* the app binary, run with `--mcp`. Add to
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
 
-**`~/Library/Application Support/Claude/claude_desktop_config.json`**
 ```json
 {
   "mcpServers": {
@@ -106,64 +109,77 @@ The MCP server is built into Juicer.app itself — no separate process. Add to C
 }
 ```
 
-> During dev, use the compiled binary path: `target/release/juicer`
+During dev, point at `target/debug/juicer` (run `pnpm dev` once to build it).
+
+No Python, no addon install, no port juggling — the thing Blender-MCP makes painful.
 
 ---
 
-## Using with Claude
+## Using it with Claude
 
-With Blender connected and Juicer running, ask Claude:
-
-- *"Set up a dark product demo layout with my brand color #6644ff and title 'Acme'"*
-- *"Add a plane at position 0,0,0 and apply this HTML to it: `<div...>`"*
-- *"Set a keyframe on Title at frame 1 with location [0, -3, 0] and at frame 30 with location [0, 0, 0]"*
-- *"Render the animation from frame 1 to 300 at 30fps to /tmp/demo.mp4"*
+- *"Set up a dark demo layout titled 'Acme' with accent #6644ff"* → `arrange_demo_layout`
+- *"Add a plane and put my pricing-card PNG on it at /tmp/card.png"*
+- *"Keyframe the title: frame 1 at y=-2 opacity 0, frame 30 at y=0 opacity 1, ease-out"*
+- *"Dolly the camera from z=8 to z=4 over the first 60 frames"* → `set_keyframe_camera`
+- *"Render frames 1–300 to /tmp/demo.mp4"* → `render_animation`
 
 ### MCP tools
 
-| Tool | What Blender does |
+| Tool | Action |
 |---|---|
-| `get_scene` | Returns all Blender objects with transforms + keyframes |
-| `add_element` | `bpy.ops.mesh.primitive_*_add`, text objects, image planes |
-| `update_element` | Set location/rotation/scale/visibility/material |
-| `remove_element` | `bpy.data.objects.remove` |
-| `set_keyframe` | `obj.keyframe_insert(data_path=..., frame=...)` — Blender's native keyframe system |
-| `play_animation` / `seek_animation` | Advance Blender's scene frame |
-| `render_frame` | `bpy.ops.render.render(write_still=True)` via Eevee |
-| `render_animation` | `bpy.ops.render.render(animation=True)` → MP4 |
-| `arrange_demo_layout` | Multi-op: background, title, content plane, accent geometry |
+| `get_scene` | Full scene JSON — elements, keyframes, camera, render settings |
+| `add_element` | plane / box / sphere (plane + `image_path` = your HTML/brand visual) |
+| `update_element` | Move, rotate, scale, recolor, opacity, swap image |
+| `remove_element` | Delete |
+| `set_keyframe` | Keyframe position/rotation/scale/opacity with easing |
+| `set_camera` / `set_keyframe_camera` | Static or animated camera |
+| `set_render_settings` | Resolution, fps, frame range, background |
+| `render_frame` | Single PNG via wgpu |
+| `render_animation` | Full MP4 via wgpu + native encoder |
+| `arrange_demo_layout` | One-shot starter composition |
 
 ---
 
-## HTML → Blender workflow
+## HTML → 3D workflow
 
-1. Paste your component's rendered HTML in the "HTML → 3D Plane" panel
-2. Click **Capture** — the Swift helper renders it at your chosen resolution using macOS WebKit
-3. The PNG is automatically applied as a texture on a new Blender plane
-4. Position it in 3D using the Properties panel or via Claude
-5. Keyframe the position/opacity for animation
-6. Render
-
-The capture is done in a native `WKWebView` offscreen window — it supports full CSS including `backdrop-filter`, CSS variables, custom Google Fonts (if loaded), SVG, etc.
+1. Paste your component's HTML in the **HTML → 3D Plane** panel
+2. **Capture** → `juicer-html-capture` renders it via native WKWebView (full CSS3, fonts, gradients)
+3. The PNG is applied as a GPU texture on a new plane
+4. Position / keyframe it (panel or Claude)
+5. **Render MP4**
 
 ---
 
-## Why Tauri, not Electron
+## Project layout
 
-| | Electron | Tauri |
-|---|---|---|
-| Bundle size | ~85MB (bundled Chromium) | ~8MB (uses system WebView) |
-| Memory | ~150MB at idle | ~20MB at idle |
-| macOS WebKit | No | **Yes — uses native Safari engine** |
-| Rust backend | No | **Yes — direct process management, no Node overhead** |
+```
+apps/desktop/
+  src/                      React UI (Tauri WebView)
+  src-tauri/
+    src/
+      scene.rs              scene data model
+      anim.rs               keyframe tracks + easing
+      render/
+        mod.rs              wgpu offscreen renderer
+        mesh.rs             plane / box / sphere primitives
+        shader.wgsl         vertex+fragment shader
+      video.rs              frame sequence → MP4 orchestration
+      mcp.rs                MCP stdio server (Claude)
+      html_capture.rs       calls juicer-html-capture
+      lib.rs                Tauri commands + app state
+  tools/
+    html-capture/main.swift native WKWebView → PNG
+    encoder/main.swift       native AVFoundation → MP4
+    build-helpers.sh
+```
 
 ---
 
 ## Roadmap
 
-- [ ] Embed Blender's OOTB viewport directly (requires window-mode Blender build — possible via XPC on Mac)
-- [ ] Camera keyframing as a first-class MCP tool
-- [ ] Eevee real-time preview streamed to the viewport panel (render to shared memory)
-- [ ] Scene save/load to `.juicer` JSON
-- [ ] ProRes / Apple Animation codec export (via Blender's ffmpeg backend)
-- [ ] Multiple sheets / sequences (intro → demo → outro)
+- [ ] Real-time interactive viewport (render-to-surface in a child window, not on-demand)
+- [ ] On-canvas transform gizmos
+- [ ] Standard mode: glTF model import + PBR materials
+- [ ] Pro mode: optional Cycles bridge for photoreal stills
+- [ ] Timeline UI with draggable keyframes + curve editor
+- [ ] Windows/Linux: swap WKWebView capture for headless-chromium, AVFoundation for ffmpeg

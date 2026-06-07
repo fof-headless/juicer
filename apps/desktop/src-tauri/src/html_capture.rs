@@ -44,22 +44,36 @@ pub async fn capture_html_to_png(html: &str, width: u32, height: u32, output_pat
 
 #[cfg(target_os = "macos")]
 fn find_capture_helper() -> String {
-    // Look for our bundled Swift helper first, then system webkit2png
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("juicer-html-capture")));
+    find_helper_binary("juicer-html-capture")
+}
 
-    if let Some(p) = bundled {
+/// Locate a bundled native helper binary across dev and packaged layouts.
+#[cfg(target_os = "macos")]
+pub fn find_helper_binary(name: &str) -> String {
+    // 1. Explicit override.
+    if let Ok(dir) = std::env::var("JUICER_BIN_DIR") {
+        let p = Path::new(&dir).join(name);
         if p.exists() {
             return p.to_string_lossy().into_owned();
         }
     }
-
-    // webkit2png installed via brew
-    if Path::new("/usr/local/bin/webkit2png").exists() {
-        return "/usr/local/bin/webkit2png".into();
+    // 2. Next to the running executable (packaged .app / Resources).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            for cand in [d.join(name), d.join("bin").join(name)] {
+                if cand.exists() {
+                    return cand.to_string_lossy().into_owned();
+                }
+            }
+        }
     }
-
-    // Last resort: python3 -m webkit2png may work on some setups
-    "juicer-html-capture".into()
+    // 3. Dev layout: src-tauri/bin relative to cwd.
+    for rel in ["src-tauri/bin", "apps/desktop/src-tauri/bin", "bin"] {
+        let p = Path::new(rel).join(name);
+        if p.exists() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    // 4. Fall back to PATH lookup.
+    name.to_string()
 }
