@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::State;
 
-use anim::{Easing, KeyValue, Track};
+use anim::{Easing, KeyValue};
 use render::Renderer;
 use scene::{Element, ElementKind, Scene};
 

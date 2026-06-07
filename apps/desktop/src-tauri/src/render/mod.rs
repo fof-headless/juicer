@@ -14,7 +14,6 @@ use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
-use crate::anim::KeyValue;
 use crate::scene::{hex_to_linear, Element, ElementKind, Scene};
 
 #[repr(C)]
