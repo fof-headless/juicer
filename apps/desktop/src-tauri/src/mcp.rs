@@ -47,10 +47,10 @@ pub async fn run_stdio_server(state: Arc<AppState>) -> Result<()> {
             "tools/call" => {
                 let tool = req["params"]["name"].as_str().unwrap_or("");
                 let args = req["params"]["arguments"].clone();
-                let text = handle_tool(tool, &args, &state).await;
+                let content = handle_tool(tool, &args, &state).await;
                 json!({
                     "jsonrpc": "2.0", "id": id,
-                    "result": { "content": [{ "type": "text", "text": text }] }
+                    "result": { "content": content }
                 })
             }
             _ => json!({
@@ -67,11 +67,15 @@ pub async fn run_stdio_server(state: Arc<AppState>) -> Result<()> {
     Ok(())
 }
 
-async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String {
+fn text_content(s: impl Into<String>) -> Vec<Value> {
+    vec![json!({ "type": "text", "text": s.into() })]
+}
+
+async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Value> {
     match tool {
         "get_scene" => {
             let scene = state.scene.lock().await;
-            serde_json::to_string_pretty(&*scene).unwrap_or_default()
+            text_content(serde_json::to_string_pretty(&*scene).unwrap_or_default())
         }
 
         "add_element" => {
@@ -85,22 +89,22 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String 
                 el.position = vec3(p, el.position);
             }
             scene.elements.push(el);
-            format!("Added element '{id}'")
+            text_content(format!("Added element '{id}'"))
         }
 
         "update_element" => {
             let mut scene = state.scene.lock().await;
             let name = args["name"].as_str().or(args["id"].as_str()).unwrap_or("");
             match scene.element_mut(name) {
-                Some(el) => { apply_patch(el, args); format!("Updated '{name}'") }
-                None => format!("Element '{name}' not found"),
+                Some(el) => { apply_patch(el, args); text_content(format!("Updated '{name}'")) }
+                None => text_content(format!("Element '{name}' not found")),
             }
         }
 
         "remove_element" => {
             let mut scene = state.scene.lock().await;
             let name = args["name"].as_str().or(args["id"].as_str()).unwrap_or("");
-            if scene.remove(name) { format!("Removed '{name}'") } else { format!("'{name}' not found") }
+            text_content(if scene.remove(name) { format!("Removed '{name}'") } else { format!("'{name}' not found") })
         }
 
         "set_keyframe" => {
@@ -111,11 +115,11 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String 
             let ease = parse_easing(args["easing"].as_str());
             let kv = match parse_keyvalue(&property, &args["value"]) {
                 Ok(v) => v,
-                Err(e) => return format!("Bad keyframe value: {e}"),
+                Err(e) => return text_content(format!("Bad keyframe value: {e}")),
             };
             match scene.element_mut(name) {
-                Some(el) => { el.track_mut(&property).insert(frame, kv, ease); format!("Keyframed '{name}' {property} @ frame {frame}") }
-                None => format!("Element '{name}' not found"),
+                Some(el) => { el.track_mut(&property).insert(frame, kv, ease); text_content(format!("Keyframed '{name}' {property} @ frame {frame}")) }
+                None => text_content(format!("Element '{name}' not found")),
             }
         }
 
@@ -128,7 +132,7 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String 
                 scene.camera.target = vec3(t, scene.camera.target);
             }
             if let Some(f) = args["fov_deg"].as_f64() { scene.camera.fov_deg = f as f32; }
-            "Camera updated".into()
+            text_content("Camera updated")
         }
 
         "set_keyframe_camera" => {
@@ -138,7 +142,7 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String 
             let ease = parse_easing(args["easing"].as_str());
             let kv = match parse_keyvalue(&property, &args["value"]) {
                 Ok(v) => v,
-                Err(e) => return format!("Bad value: {e}"),
+                Err(e) => return text_content(format!("Bad value: {e}")),
             };
             let track = if let Some(nt) = scene.camera.tracks.iter_mut().find(|t| t.property == property) {
                 &mut nt.track
@@ -147,7 +151,7 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String 
                 &mut scene.camera.tracks.last_mut().unwrap().track
             };
             track.insert(frame, kv, ease);
-            format!("Camera {property} keyframed @ {frame}")
+            text_content(format!("Camera {property} keyframed @ {frame}"))
         }
 
         "set_render_settings" => {
@@ -167,24 +171,38 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String 
                     ];
                 }
             }
-            "Render settings updated".into()
+            text_content("Render settings updated")
         }
 
         "render_frame" => {
             let frame = args["frame"].as_f64().unwrap_or(1.0) as f32;
-            let out = args["output_path"].as_str().unwrap_or("/tmp/juicer_render.png").to_string();
+            let out = args["output_path"].as_str().map(|s| s.to_string());
             let scene = state.scene.lock().await.clone();
             let mut rg = state.renderer.lock().await;
             if rg.is_none() {
                 match Renderer::new() {
                     Ok(r) => *rg = Some(r),
-                    Err(e) => return format!("GPU init failed: {e}"),
+                    Err(e) => return text_content(format!("GPU init failed: {e}")),
                 }
             }
-            match rg.as_mut().unwrap().render_to_png(&scene, frame, &out) {
-                Ok(()) => format!("Rendered frame {frame} → {out}"),
-                Err(e) => format!("Render error: {e}"),
+            let r = rg.as_mut().unwrap();
+            // Always render to bytes so we can embed the image in the response.
+            let png_bytes = match r.render_to_png_bytes(&scene, frame) {
+                Ok(b) => b,
+                Err(e) => return text_content(format!("Render error: {e}")),
+            };
+            // Also write to disk if a path was requested.
+            if let Some(path) = &out {
+                if let Err(e) = r.render_to_png(&scene, frame, path) {
+                    return text_content(format!("Render error writing to '{path}': {e}"));
+                }
             }
+            let save_msg = out.as_deref().map(|p| format!(" Saved to {p}.")).unwrap_or_default();
+            let b64 = base64_encode(&png_bytes);
+            vec![
+                json!({ "type": "text", "text": format!("Rendered frame {frame}.{save_msg}") }),
+                json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64 } }),
+            ]
         }
 
         "render_animation" => {
@@ -194,22 +212,38 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> String 
             if rg.is_none() {
                 match Renderer::new() {
                     Ok(r) => *rg = Some(r),
-                    Err(e) => return format!("GPU init failed: {e}"),
+                    Err(e) => return text_content(format!("GPU init failed: {e}")),
                 }
             }
             match video::render_animation(rg.as_mut().unwrap(), &scene, &out) {
-                Ok(path) => format!("Rendered animation → {path}"),
-                Err(e) => format!("Render error: {e}"),
+                Ok(path) => text_content(format!("Rendered animation → {path}")),
+                Err(e) => text_content(format!("Render error: {e}")),
             }
         }
 
         "arrange_demo_layout" => arrange_demo_layout(args, state).await,
 
-        _ => format!("Unknown tool: {tool}"),
+        _ => text_content(format!("Unknown tool: {tool}")),
     }
 }
 
-async fn arrange_demo_layout(args: &Value, state: &Arc<AppState>) -> String {
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[(n >> 18) & 63] as char);
+        out.push(CHARS[(n >> 12) & 63] as char);
+        out.push(if chunk.len() > 1 { CHARS[(n >> 6) & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[n & 63] as char } else { '=' });
+    }
+    out
+}
+
+async fn arrange_demo_layout(args: &Value, state: &Arc<AppState>) -> Vec<Value> {
     let color = args["accentColor"].as_str().unwrap_or("#6644ff").to_string();
     let title = args["title"].as_str().unwrap_or("Your Product").to_string();
 
@@ -241,14 +275,14 @@ async fn arrange_demo_layout(args: &Value, state: &Arc<AppState>) -> String {
     barr.color = color.clone();
     scene.elements.push(barr);
 
-    format!(
+    text_content(format!(
         "Created '{title}' demo layout: ContentPlane (id {id_plane}), two accent bars in {color}.\n\n\
          Next:\n\
          1. Use the HTML importer (or capture_html tool) to render your brand HTML to a PNG.\n\
          2. update_element ContentPlane with image_path=<that png>.\n\
          3. set_keyframe on ContentPlane: frame 1 opacity 0 + position [0,-1,0], frame 30 opacity 1 + position [0,0.4,0].\n\
          4. render_animation to export MP4."
-    )
+    ))
 }
 
 fn vec3(arr: &[Value], fallback: [f32; 3]) -> [f32; 3] {
@@ -320,7 +354,13 @@ fn tool_definitions() -> Vec<Value> {
                     "name": { "type": "string" },
                     "frame": { "type": "number" },
                     "property": { "type": "string", "enum": ["position", "rotation", "scale", "opacity"] },
-                    "value": { "description": "[x,y,z] for position/rotation/scale, or a number for opacity" },
+                    "value": {
+                        "description": "[x,y,z] for position/rotation/scale, or a number for opacity",
+                        "oneOf": [
+                            { "type": "number" },
+                            { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+                        ]
+                    },
                     "easing": { "type": "string", "enum": ["linear", "ease-in", "ease-out", "ease-in-out", "step"] }
                 }
             }

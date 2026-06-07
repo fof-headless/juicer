@@ -454,9 +454,24 @@ impl Renderer {
     /// Render a single frame and save it as PNG to `path`.
     pub fn render_to_png(&mut self, scene: &Scene, frame: f32, path: &str) -> Result<()> {
         let (pixels, w, h) = self.render_frame(scene, frame)?;
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            std::fs::create_dir_all(parent).context("creating output directory")?;
+        }
         image::save_buffer(path, &pixels, w, h, image::ColorType::Rgba8)
             .context("failed to write PNG")?;
         Ok(())
+    }
+
+    /// Render a frame and return raw PNG bytes (for embedding in MCP responses).
+    pub fn render_to_png_bytes(&mut self, scene: &Scene, frame: f32) -> Result<Vec<u8>> {
+        let (pixels, w, h) = self.render_frame(scene, frame)?;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::write_buffer_with_format(
+            &mut buf, &pixels, w, h,
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
+        ).context("encoding PNG bytes")?;
+        Ok(buf.into_inner())
     }
 }
 

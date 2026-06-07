@@ -67,13 +67,30 @@ pub fn find_helper_binary(name: &str) -> String {
             }
         }
     }
-    // 3. Dev layout: src-tauri/bin relative to cwd.
+    // 3. Walk up from the executable looking for src-tauri/bin (dev layout).
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..6 {
+            if let Some(d) = dir {
+                for suffix in ["src-tauri/bin", "apps/desktop/src-tauri/bin"] {
+                    let p = d.join(suffix).join(name);
+                    if p.exists() {
+                        return p.to_string_lossy().into_owned();
+                    }
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else {
+                break;
+            }
+        }
+    }
+    // 4. Relative to cwd (fallback for dev when cwd is project root).
     for rel in ["src-tauri/bin", "apps/desktop/src-tauri/bin", "bin"] {
         let p = Path::new(rel).join(name);
         if p.exists() {
             return p.to_string_lossy().into_owned();
         }
     }
-    // 4. Fall back to PATH lookup.
+    // 5. Fall back to PATH lookup.
     name.to_string()
 }

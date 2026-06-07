@@ -230,12 +230,27 @@ pub fn parse_easing(s: Option<&str>) -> Easing {
 
 pub fn parse_keyvalue(property: &str, value: &serde_json::Value) -> Result<KeyValue, String> {
     if property == "opacity" {
-        let s = value.as_f64().ok_or("opacity must be a number")? as f32;
+        // Accept number or string-encoded number (MCP clients may stringify untyped values).
+        let s = value.as_f64()
+            .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+            .ok_or("opacity must be a number")? as f32;
         Ok(KeyValue::Scalar(s))
     } else {
-        let arr = value.as_array().ok_or("expected [x,y,z]")?;
+        // Accept JSON array or a JSON string like "[0,1,0]".
+        let owned;
+        let arr: &[serde_json::Value] = if let Some(a) = value.as_array() {
+            a
+        } else if let Some(s) = value.as_str() {
+            owned = serde_json::from_str::<serde_json::Value>(s)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
+            &owned
+        } else {
+            return Err("expected [x,y,z]".into());
+        };
         if arr.len() != 3 {
-            return Err("expected 3 components".into());
+            return Err(format!("expected 3 components, got {}", arr.len()));
         }
         let v = [
             arr[0].as_f64().unwrap_or(0.0) as f32,
