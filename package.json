@@ -3,8 +3,9 @@
   "private": true,
   "workspaces": ["apps/desktop"],
   "scripts": {
-    "dev": "pnpm --filter juicer-desktop tauri dev",
-    "build": "pnpm --filter juicer-desktop tauri build",
+    "helpers": "pnpm --filter juicer-desktop helpers",
+    "dev": "pnpm --filter juicer-desktop helpers && pnpm --filter juicer-desktop tauri dev",
+    "build": "pnpm --filter juicer-desktop helpers && pnpm --filter juicer-desktop tauri build",
     "ui": "pnpm --filter juicer-desktop dev"
   }
 }
