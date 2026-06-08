@@ -1,7 +1,7 @@
 {
   "productName": "Juicer",
   "version": "0.1.0",
-  "identifier": "studio.juicer.app",
+  "identifier": "studio.juicer.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
