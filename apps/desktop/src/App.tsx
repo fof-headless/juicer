@@ -5,35 +5,58 @@ import { Sidebar } from './components/Sidebar'
 import { Properties } from './components/Properties'
 import { HtmlImporter } from './components/HtmlImporter'
 import { Viewport } from './components/Viewport'
+import { Timeline } from './components/Timeline'
 import { useSceneStore } from './store/scene'
 
 export function App() {
   const refresh = useSceneStore((s) => s.refresh)
+  const scene = useSceneStore((s) => s.scene)
+  const frame = useSceneStore((s) => s.frame)
+  const renderPreview = useSceneStore((s) => s.renderPreview)
 
   useEffect(() => {
     refresh()
   }, [refresh])
 
+  // Live preview: re-render shortly after any scene edit or frame change, so
+  // the viewport reflects edits without manually clicking. Skipped during
+  // playback (the Toolbar loop drives its own frames).
+  useEffect(() => {
+    if (!scene || scene.elements.length === 0) return
+    const t = setTimeout(() => {
+      if (!(useSceneStore.getState() as any).__playing) renderPreview(frame)
+    }, 140)
+    return () => clearTimeout(t)
+  }, [scene, frame, renderPreview])
+
   return (
     <div style={app.root}>
       <Toolbar />
       <div style={app.body}>
-        <PanelGroup direction="horizontal">
-          <Panel defaultSize={20} minSize={14} maxSize={30}>
-            <PanelGroup direction="vertical">
-              <Panel defaultSize={50} minSize={20}><Sidebar /></Panel>
-              <PanelResizeHandle style={handle.h} />
-              <Panel defaultSize={50} minSize={20}><HtmlImporter /></Panel>
+        <PanelGroup direction="vertical">
+          <Panel defaultSize={74} minSize={40}>
+            <PanelGroup direction="horizontal">
+              <Panel defaultSize={20} minSize={14} maxSize={30}>
+                <PanelGroup direction="vertical">
+                  <Panel defaultSize={50} minSize={20}><Sidebar /></Panel>
+                  <PanelResizeHandle style={handle.h} />
+                  <Panel defaultSize={50} minSize={20}><HtmlImporter /></Panel>
+                </PanelGroup>
+              </Panel>
+
+              <PanelResizeHandle style={handle.v} />
+
+              <Panel defaultSize={58} minSize={30}><Viewport /></Panel>
+
+              <PanelResizeHandle style={handle.v} />
+
+              <Panel defaultSize={22} minSize={14} maxSize={32}><Properties /></Panel>
             </PanelGroup>
           </Panel>
 
-          <PanelResizeHandle style={handle.v} />
+          <PanelResizeHandle style={handle.h} />
 
-          <Panel defaultSize={58} minSize={30}><Viewport /></Panel>
-
-          <PanelResizeHandle style={handle.v} />
-
-          <Panel defaultSize={22} minSize={14} maxSize={32}><Properties /></Panel>
+          <Panel defaultSize={26} minSize={12} maxSize={45}><Timeline /></Panel>
         </PanelGroup>
       </div>
     </div>

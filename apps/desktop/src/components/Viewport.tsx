@@ -1,20 +1,12 @@
-import { useEffect } from 'react'
 import { useSceneStore } from '../store/scene'
 
-/// The viewport shows the latest GPU-rendered frame. In Lite mode the renderer
-/// is offscreen (render-on-demand). Hit Preview or scrub the timeline to update.
+/// The viewport shows the latest GPU-rendered frame. The app auto-previews
+/// after edits and on scrub; the button forces an immediate re-render.
 export function Viewport() {
   const previewUrl = useSceneStore((s) => s.previewUrl)
   const renderPreview = useSceneStore((s) => s.renderPreview)
   const scene = useSceneStore((s) => s.scene)
   const frame = useSceneStore((s) => s.frame)
-
-  // Auto-render an initial preview once the scene has content.
-  useEffect(() => {
-    if (scene && scene.elements.length > 0 && !previewUrl) {
-      renderPreview(frame)
-    }
-  }, [scene?.elements.length])
 
   return (
     <div style={s.container}>

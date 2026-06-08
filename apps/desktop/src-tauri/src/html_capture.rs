@@ -6,12 +6,15 @@
 /// Falls back to a fast headless-chromium approach (via Tauri shell) on other platforms.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Wrap a user's HTML fragment in a full document with the common web
 /// libraries pre-loaded, so Claude can send raw Tailwind/font/icon markup and
 /// it renders correctly. `libraries` is an extra list of CSS/JS URLs to inject;
 /// `font` overrides the default Google Font family.
+///
+/// Tailwind is loaded from the **vendored local copy** (resources/tailwind.js)
+/// when present — so captures work fully offline — falling back to the CDN.
 pub fn wrap_html(fragment: &str, libraries: &[String], font: Option<&str>) -> String {
     // If the caller already sent a full document, don't double-wrap it.
     let looks_complete = {
@@ -25,10 +28,18 @@ pub fn wrap_html(fragment: &str, libraries: &[String], font: Option<&str>) -> St
     let font_family = font.unwrap_or("Inter");
     let font_param = font_family.replace(' ', "+");
 
-    // Built-in library set: Tailwind (JIT via Play CDN), Google Fonts, Lucide,
-    // Animate.css, Font Awesome. These cover the vast majority of component HTML.
+    // Tailwind: prefer the vendored local build (copied next to the capture
+    // HTML as ./tailwind.js by capture_html_to_png); else the Play CDN.
+    let tailwind_tag = if local_tailwind_path().is_some() {
+        "<script src=\"tailwind.js\"></script>\n".to_string()
+    } else {
+        "<script src=\"https://cdn.tailwindcss.com\"></script>\n".to_string()
+    };
+
+    // Built-in library set: Tailwind, Google Fonts, Lucide, Animate.css,
+    // Font Awesome. These cover the vast majority of component HTML.
     let mut head = String::new();
-    head.push_str("<script src=\"https://cdn.tailwindcss.com\"></script>\n");
+    head.push_str(&tailwind_tag);
     head.push_str(&format!(
         "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\
          <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\
@@ -63,33 +74,94 @@ pub fn wrap_html(fragment: &str, libraries: &[String], font: Option<&str>) -> St
 pub async fn capture_html_to_png(html: &str, width: u32, height: u32, output_path: &str) -> Result<()> {
     use std::process::Command;
 
-    // Write HTML to a temp file
-    let tmp_html = std::env::temp_dir().join(format!("juicer_capture_{}.html", std::process::id()));
+    // Per-capture temp dir. The Swift helper grants WebKit read access to the
+    // HTML's parent dir, so a vendored tailwind.js placed alongside loads via a
+    // relative <script src="tailwind.js"> — fully offline.
+    let dir = std::env::temp_dir().join(format!("juicer_cap_{}_{}", std::process::id(), now_millis()));
+    std::fs::create_dir_all(&dir)?;
+    let tmp_html = dir.join("index.html");
     std::fs::write(&tmp_html, html)?;
 
-    // Use the bundled Swift capture helper (see tools/html-capture/main.swift)
+    // Copy the vendored Tailwind build next to the HTML if we have it. Whether
+    // the local file loads (relative path) or the CDN is used (offline) the
+    // markup is identical to what wrap_html injected.
+    let local_tw = local_tailwind_path().is_some();
+    if let Some(src) = local_tailwind_path() {
+        let _ = std::fs::copy(&src, dir.join("tailwind.js"));
+    }
+
     let helper = find_capture_helper();
 
-    // Library CDNs (Tailwind JIT especially) need a moment to fetch + compile.
-    // Pass a generous settle delay as the 5th arg.
+    // Tailwind JIT needs a moment to compile. Local build is fast (~0.6s);
+    // CDN needs longer to fetch first.
+    let settle = if local_tw { "0.7" } else { "1.4" };
     let status = Command::new(&helper)
         .args([
             tmp_html.to_str().unwrap(),
             output_path,
             &width.to_string(),
             &height.to_string(),
-            "1.2",
+            settle,
         ])
         .status()
         .with_context(|| format!("Failed to run HTML capture helper at '{helper}'"))?;
 
-    let _ = std::fs::remove_file(&tmp_html);
+    let _ = std::fs::remove_dir_all(&dir);
 
     if !status.success() {
         anyhow::bail!("HTML capture helper exited with error. Make sure '{helper}' is built.");
     }
 
     Ok(())
+}
+
+fn now_millis() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+}
+
+/// Absolute path to the vendored Tailwind browser build, if bundled.
+pub fn local_tailwind_path() -> Option<PathBuf> {
+    find_resource("tailwind.js")
+}
+
+/// Locate a bundled resource (e.g. tailwind.js) across dev and packaged layouts.
+pub fn find_resource(name: &str) -> Option<PathBuf> {
+    // 1. Explicit override.
+    if let Ok(dir) = std::env::var("JUICER_RESOURCE_DIR") {
+        let p = Path::new(&dir).join(name);
+        if p.exists() { return Some(p); }
+    }
+    // 2. Packaged .app: Contents/MacOS/juicer → Contents/Resources/resources/<name>.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(macos) = exe.parent() {
+            for cand in [
+                macos.join("resources").join(name),
+                macos.join(name),
+                macos.join("../Resources/resources").join(name),
+                macos.join("../Resources").join(name),
+            ] {
+                if cand.exists() { return Some(cand); }
+            }
+        }
+        // 3. Walk up for the dev layout (src-tauri/resources).
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..6 {
+            if let Some(d) = dir {
+                for suffix in ["src-tauri/resources", "apps/desktop/src-tauri/resources"] {
+                    let p = d.join(suffix).join(name);
+                    if p.exists() { return Some(p); }
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else { break; }
+        }
+    }
+    // 4. Relative to cwd.
+    for rel in ["src-tauri/resources", "apps/desktop/src-tauri/resources", "resources"] {
+        let p = Path::new(rel).join(name);
+        if p.exists() { return Some(p); }
+    }
+    None
 }
 
 #[cfg(not(target_os = "macos"))]

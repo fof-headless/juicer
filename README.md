@@ -165,8 +165,12 @@ always a home on disk and a restart restores your scene. Ask Claude to
 `capture_html` auto-injects the common web stack, so you can send raw
 component markup and it renders correctly:
 
-- **Tailwind** (full JIT via Play CDN)
-- **Google Fonts** (default Inter; override with `font`)
+- **Tailwind** — the v4 browser build is **vendored locally**
+  (`src-tauri/resources/tailwind.js`) and bundled into the app, so captures
+  work **fully offline**; it copies next to each capture and loads via a
+  relative path (falls back to the CDN only if the local file is missing)
+- **Google Fonts** (default Inter; override with `font` — needs network,
+  degrades to system fonts offline)
 - **Lucide** icons, **Font Awesome**, **Animate.css**
 - Anything else via the `libraries` array (CDN URLs)
 
@@ -219,9 +223,13 @@ apps/desktop/
 
 ## Roadmap
 
-- [ ] Real-time interactive viewport (render-to-surface in a child window, not on-demand)
+- [x] Projects on disk (scene.json + assets/ + renders/), auto-save
+- [x] Tailwind/fonts/icons in capture, bundled offline
+- [x] Live auto-preview after edits + timeline scrub
+- [x] Timeline strip with keyframe markers
+- [ ] Draggable keyframes + curve editor in the timeline
 - [ ] On-canvas transform gizmos
+- [ ] Real-time interactive viewport (render-to-surface, not on-demand)
 - [ ] Standard mode: glTF model import + PBR materials
 - [ ] Pro mode: optional Cycles bridge for photoreal stills
-- [ ] Timeline UI with draggable keyframes + curve editor
 - [ ] Windows/Linux: swap WKWebView capture for headless-chromium, AVFoundation for ffmpeg

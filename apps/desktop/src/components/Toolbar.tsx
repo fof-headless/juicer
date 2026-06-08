@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useSceneStore } from '../store/scene'
-import { Play, Pause, SkipBack, Video, Loader, Image, Save, Folder } from 'lucide-react'
+import { Play, Pause, SkipBack, Video, Loader, Image, Save, Folder, FolderPlus } from 'lucide-react'
 
 export function Toolbar() {
   const scene = useSceneStore((s) => s.scene)
   const project = useSceneStore((s) => s.project)
   const refreshProject = useSceneStore((s) => s.refreshProject)
   const saveProject = useSceneStore((s) => s.saveProject)
+  const createProject = useSceneStore((s) => s.createProject)
   const frame = useSceneStore((s) => s.frame)
   const setFrame = useSceneStore((s) => s.setFrame)
   const renderPreview = useSceneStore((s) => s.renderPreview)
@@ -71,6 +72,16 @@ export function Toolbar() {
     }
   }
 
+  const doNewProject = async () => {
+    const name = window.prompt('New project name', 'Untitled')
+    if (!name) return
+    try {
+      await createProject(name)
+    } catch (e: any) {
+      alert(`Could not create project: ${e?.toString?.() ?? e}`)
+    }
+  }
+
   const tc = `${String(Math.floor(frame / fps / 60)).padStart(2, '0')}:${String(Math.floor((frame / fps) % 60)).padStart(2, '0')} · f${frame}`
 
   return (
@@ -86,6 +97,9 @@ export function Toolbar() {
           <span style={s.projectName}>{project.name}</span>
         </div>
       )}
+      <button style={s.newBtn} onClick={doNewProject} title="New project">
+        <FolderPlus size={13} />
+      </button>
 
       <div style={s.playback}>
         <button style={s.btn} onClick={rewind}><SkipBack size={13} /></button>
@@ -118,6 +132,7 @@ const s: Record<string, React.CSSProperties> = {
   mode: { fontSize: 9, fontWeight: 700, color: '#44cc77', border: '1px solid rgba(68,204,119,0.3)', borderRadius: 4, padding: '1px 5px', letterSpacing: '0.08em' },
   project: { display: 'flex', alignItems: 'center', gap: 5, color: '#7777aa', fontSize: 11, fontWeight: 600, background: '#141420', border: '1px solid #1e1e2e', borderRadius: 6, padding: '3px 8px', ['WebkitAppRegion' as any]: 'no-drag', maxWidth: 160, overflow: 'hidden' },
   projectName: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  newBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#141420', border: '1px solid #1e1e2e', borderRadius: 6, color: '#7777aa', cursor: 'pointer', padding: '4px 6px', ['WebkitAppRegion' as any]: 'no-drag' },
   playback: { display: 'flex', alignItems: 'center', gap: 5, background: '#141420', padding: '4px 8px', borderRadius: 8, border: '1px solid #1e1e2e', ['WebkitAppRegion' as any]: 'no-drag' },
   btn: { display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', color: '#7777aa', cursor: 'pointer', padding: 5, borderRadius: 4 },
   tc: { fontFamily: 'monospace', fontSize: 11, color: '#555570', minWidth: 90 },
