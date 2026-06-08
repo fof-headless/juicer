@@ -78,10 +78,68 @@ function makeRotZ(rad: number): M4 {
   return [c,-s,0,0, s,c,0,0, 0,0,1,0, 0,0,0,1]
 }
 
-function elementTransform(el: Element): M4 {
-  const [px,py,pz] = el.position
-  const [rx,ry,rz] = el.rotation
-  const [sx,sy,sz] = el.scale
+// ── Keyframe evaluation (ported 1:1 from src-tauri/src/anim.rs) ────────────────
+
+function ease(kind: string, t: number): number {
+  t = Math.max(0, Math.min(1, t))
+  switch (kind) {
+    case 'linear': return t
+    case 'ease-in': return t*t*t
+    case 'ease-out': return 1-Math.pow(1-t,3)
+    case 'step': return 0
+    case 'ease-in-out':
+    default:
+      return t<0.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2
+  }
+}
+
+type KV = number | [number,number,number]
+function kvVec3(v: KV): V3 { return Array.isArray(v) ? v : [v,v,v] }
+function kvScalar(v: KV): number { return Array.isArray(v) ? v[0] : v }
+
+function lerpKV(a: KV, b: KV, t: number): KV {
+  if (!Array.isArray(a) && !Array.isArray(b)) return a+(b-a)*t
+  const av=kvVec3(a), bv=kvVec3(b)
+  return [av[0]+(bv[0]-av[0])*t, av[1]+(bv[1]-av[1])*t, av[2]+(bv[2]-av[2])*t]
+}
+
+/** Sample a track's keys at `frame`. Returns null if no keys. */
+function sampleTrack(keys: Array<{frame:number;value:KV;easing:string}>, frame: number): KV|null {
+  if (keys.length === 0) return null
+  if (keys.length === 1) return keys[0].value
+  const sorted = [...keys].sort((a,b)=>a.frame-b.frame)
+  if (frame <= sorted[0].frame) return sorted[0].value
+  if (frame >= sorted[sorted.length-1].frame) return sorted[sorted.length-1].value
+  for (let i=0;i<sorted.length-1;i++) {
+    const a=sorted[i], b=sorted[i+1]
+    if (frame>=a.frame && frame<=b.frame) {
+      const span = Math.max(b.frame-a.frame, 0.0001)
+      const raw = (frame-a.frame)/span
+      const t = a.easing==='step' ? 0 : ease(a.easing, raw)
+      return lerpKV(a.value, b.value, t)
+    }
+  }
+  return sorted[sorted.length-1].value
+}
+
+function trackFor(el: Element, prop: string) {
+  return el.tracks?.find(t => t.property === prop)?.track.keys
+}
+
+/** Evaluate an element's animated position/rotation/scale/opacity at `frame`. */
+function evalElement(el: Element, frame: number) {
+  const pk = trackFor(el,'position'); const position = pk ? kvVec3(sampleTrack(pk,frame)!) : el.position
+  const rk = trackFor(el,'rotation'); const rotation = rk ? kvVec3(sampleTrack(rk,frame)!) : el.rotation
+  const sk = trackFor(el,'scale');    const scale    = sk ? kvVec3(sampleTrack(sk,frame)!) : el.scale
+  const ok = trackFor(el,'opacity');  const opacity  = ok ? kvScalar(sampleTrack(ok,frame)!) : el.opacity
+  return { position, rotation, scale, opacity }
+}
+
+function elementTransform(el: Element, frame: number): M4 {
+  const ev = evalElement(el, frame)
+  const [px,py,pz] = ev.position
+  const [rx,ry,rz] = ev.rotation
+  const [sx,sy,sz] = ev.scale
   const sw = el.kind === 'plane' ? el.width : 1
   const sh = el.kind === 'plane' ? el.height : 1
 
@@ -128,7 +186,8 @@ function drawScene(
   canvas: HTMLCanvasElement,
   scene: SceneData,
   selectedId: string|null,
-  textures: Map<string,HTMLImageElement>
+  textures: Map<string,HTMLImageElement>,
+  frame: number
 ) {
   const ctx = canvas.getContext('2d')!
   const cw = canvas.width, ch = canvas.height
@@ -153,9 +212,10 @@ function drawScene(
     })
 
   for (const el of sorted) {
-    const model = elementTransform(el)
+    const ev = evalElement(el, frame)
+    const model = elementTransform(el, frame)
     const isSel = el.id === selectedId
-    const alpha = el.opacity
+    const alpha = ev.opacity
 
     if (el.kind === 'plane') {
       const pts = PLANE_CORNERS.map(c => {
@@ -231,11 +291,11 @@ function drawScene(
       ctx.restore()
 
     } else if (el.kind === 'sphere') {
-      const center = project(el.position, vp, cw, ch)
+      const center = project(ev.position, vp, cw, ch)
       if (!center) continue
       // Approximate radius by projecting a point offset by scale
-      const [sx] = el.scale
-      const edge = project(add(el.position,[sx,0,0]), vp, cw, ch)
+      const [sx] = ev.scale
+      const edge = project(add(ev.position,[sx,0,0]), vp, cw, ch)
       const r = edge ? Math.abs(edge[0]-center[0]) : 20
       ctx.save()
       ctx.globalAlpha = alpha
@@ -254,7 +314,7 @@ function drawScene(
   if (selectedId) {
     const el = scene.elements.find(e => e.id === selectedId)
     if (el && el.kind === 'plane') {
-      const model = elementTransform(el)
+      const model = elementTransform(el, frame)
       const pts = PLANE_CORNERS.map(c => {
         const w = transformPt(model, c)
         return project(w, vp, cw, ch)
@@ -320,8 +380,8 @@ export function Viewport() {
         canvas.width = width; canvas.height = height
       }
     }
-    drawScene(canvas, scene, selectedId, texturesRef.current)
-  }, [scene, selectedId])
+    drawScene(canvas, scene, selectedId, texturesRef.current, frame)
+  }, [scene, selectedId, frame])
 
   useEffect(() => { redraw() }, [redraw, frame])
 
@@ -357,7 +417,8 @@ export function Viewport() {
       .sort((a,b) => len(sub(a.position,camPos)) - len(sub(b.position,camPos)))
 
     for (const el of sorted) {
-      const model = elementTransform(el)
+      const ev = evalElement(el, frame)
+      const model = elementTransform(el, frame)
       if (el.kind === 'plane') {
         const pts = PLANE_CORNERS.map(c => {
           const w = transformPt(model, c)
@@ -365,8 +426,8 @@ export function Viewport() {
         })
         if (pts.every(p=>p!==null) && pointInPoly(ex,ey,pts as [number,number][])) return el.id
       } else if (el.kind === 'sphere') {
-        const center = project(el.position, vp, cw, ch)
-        const edge = project(add(el.position,[el.scale[0],0,0]), vp, cw, ch)
+        const center = project(ev.position, vp, cw, ch)
+        const edge = project(add(ev.position,[ev.scale[0],0,0]), vp, cw, ch)
         if (center && edge) {
           const r = Math.abs(edge[0]-center[0])
           const dx=ex-center[0],dy=ey-center[1]
@@ -374,12 +435,12 @@ export function Viewport() {
         }
       } else {
         // Box: click near center
-        const center = project(el.position, vp, cw, ch)
+        const center = project(ev.position, vp, cw, ch)
         if (center && Math.abs(ex-center[0])<40 && Math.abs(ey-center[1])<40) return el.id
       }
     }
     return null
-  }, [scene])
+  }, [scene, frame])
 
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current!.getBoundingClientRect()
