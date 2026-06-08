@@ -23,6 +23,8 @@ let inputPath  = args[1]
 let outputPath = args[2]
 let width      = CGFloat(Double(args[3]) ?? 1200)
 let height     = CGFloat(Double(args[4]) ?? 800)
+// Optional 5th arg: settle delay in seconds (lets Tailwind/fonts load).
+let settle     = args.count >= 6 ? (Double(args[5]) ?? 0.4) : 0.4
 
 // ── Off-screen rendering ───────────────────────────────────────────────────────
 class Renderer: NSObject, WKNavigationDelegate {
@@ -31,15 +33,21 @@ class Renderer: NSObject, WKNavigationDelegate {
     let size: CGSize
     var done = false
 
-    init(size: CGSize, outputPath: String) {
+    let settle: Double
+
+    init(size: CGSize, outputPath: String, settle: Double) {
         self.size = size
         self.outputPath = outputPath
+        self.settle = settle
 
         let config = WKWebViewConfiguration()
-        config.preferences.javaScriptEnabled = true
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
         self.webView = WKWebView(frame: CGRect(origin: .zero, size: size), configuration: config)
         super.init()
         self.webView.navigationDelegate = self
+        // Transparent background so captured cards composite cleanly onto 3D
+        // planes (the wrapper sets body background:transparent).
+        self.webView.setValue(false, forKey: "drawsBackground")
     }
 
     func load(fileURL: URL) {
@@ -47,8 +55,8 @@ class Renderer: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Give CSS/fonts a moment to settle
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+        // Give CSS/fonts/Tailwind a moment to load and lay out.
+        DispatchQueue.main.asyncAfter(deadline: .now() + self.settle) {
             self.snapshot()
         }
     }
@@ -56,6 +64,10 @@ class Renderer: NSObject, WKNavigationDelegate {
     func snapshot() {
         let config = WKSnapshotConfiguration()
         config.rect = CGRect(origin: .zero, size: size)
+        // Preserve alpha in the snapshot for transparent compositing.
+        if #available(macOS 10.15, *) {
+            config.afterScreenUpdates = true
+        }
         webView.takeSnapshot(with: config) { image, error in
             if let error = error {
                 fputs("Snapshot error: \(error)\n", stderr)
@@ -84,11 +96,11 @@ class Renderer: NSObject, WKNavigationDelegate {
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)  // Don't appear in Dock
 
-let renderer = Renderer(size: CGSize(width: width, height: height), outputPath: outputPath)
+let renderer = Renderer(size: CGSize(width: width, height: height), outputPath: outputPath, settle: settle)
 renderer.load(fileURL: URL(fileURLWithPath: inputPath))
 
-// Run the run loop until snapshot is done (with a 10s timeout)
-let deadline = Date().addingTimeInterval(10)
+// Run the run loop until snapshot is done (timeout scales with settle delay).
+let deadline = Date().addingTimeInterval(10 + settle)
 while !renderer.done && Date() < deadline {
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 }

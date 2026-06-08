@@ -4,6 +4,7 @@ mod render;
 mod mcp;
 mod html_capture;
 mod video;
+mod project;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -12,11 +13,14 @@ use tauri::State;
 use anim::{Easing, KeyValue};
 use render::Renderer;
 use scene::{Element, ElementKind, Scene};
+use project::Project;
 
-/// Shared application state: the scene plus a lazily-created GPU renderer.
+/// Shared application state: the scene, a lazily-created GPU renderer, and the
+/// active on-disk project (where scenes/assets/renders are saved).
 pub struct AppState {
     pub scene: Mutex<Scene>,
     pub renderer: Mutex<Option<Renderer>>,
+    pub project: Mutex<Option<Project>>,
 }
 
 impl AppState {
@@ -24,6 +28,38 @@ impl AppState {
         Self {
             scene: Mutex::new(Scene::default()),
             renderer: Mutex::new(None),
+            project: Mutex::new(None),
+        }
+    }
+
+    /// Persist the current scene to the active project's scene.json (if any).
+    /// Lock order is always project → scene to avoid deadlock; callers must not
+    /// hold the scene lock when calling this.
+    pub async fn autosave(&self) {
+        let proj = self.project.lock().await;
+        if let Some(p) = proj.as_ref() {
+            let scene = self.scene.lock().await;
+            if let Err(e) = p.save_scene(&scene) {
+                eprintln!("[juicer] autosave failed: {e}");
+            }
+        }
+    }
+
+    /// Ensure there's an active project. If none, open-or-create "Default" and
+    /// load its existing scene.json so restarts restore state.
+    pub async fn ensure_default_project(&self) {
+        let mut proj = self.project.lock().await;
+        if proj.is_some() {
+            return;
+        }
+        match Project::create("Default") {
+            Ok(p) => {
+                if let Ok(Some(loaded)) = p.load_scene() {
+                    *self.scene.lock().await = loaded;
+                }
+                *proj = Some(p);
+            }
+            Err(e) => eprintln!("[juicer] could not create default project: {e}"),
         }
     }
 }
@@ -73,6 +109,8 @@ async fn add_element(
     if let Some(ip) = args.image_path { el.image_path = Some(ip); }
 
     scene.elements.push(el);
+    drop(scene);
+    state.autosave().await;
     Ok(id)
 }
 
@@ -82,16 +120,24 @@ async fn update_element(
     id: String,
     patch: serde_json::Value,
 ) -> Result<(), String> {
-    let mut scene = state.scene.lock().await;
-    let el = scene.element_mut(&id).ok_or("element not found")?;
-    apply_patch(el, &patch);
+    {
+        let mut scene = state.scene.lock().await;
+        let el = scene.element_mut(&id).ok_or("element not found")?;
+        apply_patch(el, &patch);
+    }
+    state.autosave().await;
     Ok(())
 }
 
 #[tauri::command]
 async fn remove_element(state: State<'_, SharedState>, id: String) -> Result<(), String> {
-    let mut scene = state.scene.lock().await;
-    if scene.remove(&id) { Ok(()) } else { Err("element not found".into()) }
+    let removed = { state.scene.lock().await.remove(&id) };
+    if removed {
+        state.autosave().await;
+        Ok(())
+    } else {
+        Err("element not found".into())
+    }
 }
 
 #[tauri::command]
@@ -103,11 +149,14 @@ async fn set_keyframe(
     value: serde_json::Value,
     easing: Option<String>,
 ) -> Result<(), String> {
-    let mut scene = state.scene.lock().await;
-    let el = scene.element_mut(&id).ok_or("element not found")?;
-    let kv = parse_keyvalue(&property, &value)?;
-    let ease = parse_easing(easing.as_deref());
-    el.track_mut(&property).insert(frame, kv, ease);
+    {
+        let mut scene = state.scene.lock().await;
+        let el = scene.element_mut(&id).ok_or("element not found")?;
+        let kv = parse_keyvalue(&property, &value)?;
+        let ease = parse_easing(easing.as_deref());
+        el.track_mut(&property).insert(frame, kv, ease);
+    }
+    state.autosave().await;
     Ok(())
 }
 
@@ -120,12 +169,15 @@ async fn set_render_settings(
     frame_start: Option<u32>,
     frame_end: Option<u32>,
 ) -> Result<(), String> {
-    let mut scene = state.scene.lock().await;
-    if let Some(w) = width { scene.render.width = w; }
-    if let Some(h) = height { scene.render.height = h; }
-    if let Some(f) = fps { scene.render.fps = f; }
-    if let Some(s) = frame_start { scene.render.frame_start = s; }
-    if let Some(e) = frame_end { scene.render.frame_end = e; }
+    {
+        let mut scene = state.scene.lock().await;
+        if let Some(w) = width { scene.render.width = w; }
+        if let Some(h) = height { scene.render.height = h; }
+        if let Some(f) = fps { scene.render.fps = f; }
+        if let Some(s) = frame_start { scene.render.frame_start = s; }
+        if let Some(e) = frame_end { scene.render.frame_end = e; }
+    }
+    state.autosave().await;
     Ok(())
 }
 
@@ -136,10 +188,13 @@ async fn set_camera(
     target: Option<[f32; 3]>,
     fov_deg: Option<f32>,
 ) -> Result<(), String> {
-    let mut scene = state.scene.lock().await;
-    if let Some(p) = position { scene.camera.position = p; }
-    if let Some(t) = target { scene.camera.target = t; }
-    if let Some(f) = fov_deg { scene.camera.fov_deg = f; }
+    {
+        let mut scene = state.scene.lock().await;
+        if let Some(p) = position { scene.camera.position = p; }
+        if let Some(t) = target { scene.camera.target = t; }
+        if let Some(f) = fov_deg { scene.camera.fov_deg = f; }
+    }
+    state.autosave().await;
     Ok(())
 }
 
@@ -168,8 +223,19 @@ async fn render_preview(
 #[tauri::command]
 async fn render_video(
     state: State<'_, SharedState>,
-    output_path: String,
+    output_path: Option<String>,
 ) -> Result<String, String> {
+    // Default into the active project's renders/ folder.
+    let out = match output_path.filter(|s| !s.is_empty()) {
+        Some(p) => p,
+        None => {
+            let proj = state.project.lock().await;
+            match proj.as_ref() {
+                Some(p) => p.render_path("output", "mp4"),
+                None => std::env::temp_dir().join("juicer_output.mp4").to_string_lossy().to_string(),
+            }
+        }
+    };
     let scene = state.scene.lock().await.clone();
     let mut renderer_guard = state.renderer.lock().await;
     if renderer_guard.is_none() {
@@ -177,7 +243,7 @@ async fn render_video(
     }
     let renderer = renderer_guard.as_mut().unwrap();
 
-    video::render_animation(renderer, &scene, &output_path).map_err(|e| e.to_string())
+    video::render_animation(renderer, &scene, &out).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -197,15 +263,85 @@ async fn load_scene_json(state: State<'_, SharedState>, path: String) -> Result<
 
 #[tauri::command]
 async fn capture_html(
+    state: State<'_, SharedState>,
     html: String,
     width: u32,
     height: u32,
-    output_path: String,
+    output_path: Option<String>,
 ) -> Result<String, String> {
-    html_capture::capture_html_to_png(&html, width, height, &output_path)
+    // Default the output into the active project's assets/ folder.
+    let out = match output_path {
+        Some(p) => p,
+        None => {
+            let proj = state.project.lock().await;
+            match proj.as_ref() {
+                Some(p) => p.asset_path("capture", "png"),
+                None => std::env::temp_dir().join("juicer_capture.png").to_string_lossy().to_string(),
+            }
+        }
+    };
+    let wrapped = html_capture::wrap_html(&html, &[], None);
+    html_capture::capture_html_to_png(&wrapped, width, height, &out)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(output_path)
+    Ok(out)
+}
+
+// ── Project commands ───────────────────────────────────────────────────────────
+
+fn project_info(p: &Project) -> serde_json::Value {
+    serde_json::json!({
+        "name": p.name,
+        "root": p.root.to_string_lossy(),
+        "assets": p.assets_dir().to_string_lossy(),
+        "renders": p.renders_dir().to_string_lossy(),
+    })
+}
+
+#[tauri::command]
+async fn get_project(state: State<'_, SharedState>) -> Result<Option<serde_json::Value>, String> {
+    let proj = state.project.lock().await;
+    Ok(proj.as_ref().map(project_info))
+}
+
+#[tauri::command]
+async fn create_project(
+    state: State<'_, SharedState>,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let p = Project::create(&name).map_err(|e| e.to_string())?;
+    // Fresh scene for a new project.
+    *state.scene.lock().await = Scene::default();
+    let info = project_info(&p);
+    p.save_scene(&state.scene.lock().await).map_err(|e| e.to_string())?;
+    *state.project.lock().await = Some(p);
+    Ok(info)
+}
+
+#[tauri::command]
+async fn open_project(
+    state: State<'_, SharedState>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let (p, scene) = Project::open(&path).map_err(|e| e.to_string())?;
+    if let Some(loaded) = scene {
+        *state.scene.lock().await = loaded;
+    }
+    let info = project_info(&p);
+    *state.project.lock().await = Some(p);
+    Ok(info)
+}
+
+#[tauri::command]
+async fn save_project(state: State<'_, SharedState>) -> Result<String, String> {
+    let proj = state.project.lock().await;
+    match proj.as_ref() {
+        Some(p) => {
+            p.save_scene(&state.scene.lock().await).map_err(|e| e.to_string())?;
+            Ok(p.scene_path().to_string_lossy().to_string())
+        }
+        None => Err("no active project".into()),
+    }
 }
 
 // ── Helpers shared with MCP ────────────────────────────────────────────────────
@@ -303,6 +439,9 @@ pub fn run() {
 
     let state: SharedState = Arc::new(AppState::new());
 
+    // Open-or-create the Default project so the UI always has a home on disk.
+    tauri::async_runtime::block_on(state.ensure_default_project());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -321,6 +460,10 @@ pub fn run() {
             save_scene_json,
             load_scene_json,
             capture_html,
+            get_project,
+            create_project,
+            open_project,
+            save_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Juicer");

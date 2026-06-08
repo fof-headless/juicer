@@ -10,10 +10,24 @@ use std::io::{self, BufRead, Write};
 use crate::scene::Element;
 use crate::{apply_patch, parse_easing, parse_keyvalue, parse_kind, AppState};
 use crate::render::Renderer;
-use crate::video;
+use crate::project::Project;
+use crate::{html_capture, video};
 use std::sync::Arc;
 
+/// Tools that change the scene and should trigger an autosave afterward.
+fn is_mutation(tool: &str) -> bool {
+    matches!(
+        tool,
+        "add_element" | "update_element" | "remove_element" | "set_keyframe"
+            | "set_camera" | "set_keyframe_camera" | "set_render_settings"
+            | "arrange_demo_layout" | "capture_html"
+    )
+}
+
 pub async fn run_stdio_server(state: Arc<AppState>) -> Result<()> {
+    // Everything has a home on disk from the first call.
+    state.ensure_default_project().await;
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -45,9 +59,14 @@ pub async fn run_stdio_server(state: Arc<AppState>) -> Result<()> {
                 "result": { "tools": tool_definitions() }
             }),
             "tools/call" => {
-                let tool = req["params"]["name"].as_str().unwrap_or("");
+                let tool = req["params"]["name"].as_str().unwrap_or("").to_string();
                 let args = req["params"]["arguments"].clone();
-                let content = handle_tool(tool, &args, &state).await;
+                let content = handle_tool(&tool, &args, &state).await;
+                // Persist the scene after any mutation (guards from handle_tool
+                // are dropped by now, so this won't deadlock).
+                if is_mutation(&tool) {
+                    state.autosave().await;
+                }
                 json!({
                     "jsonrpc": "2.0", "id": id,
                     "result": { "content": content }
@@ -79,6 +98,14 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
         }
 
         "add_element" => {
+            // Copy any external image into the project's assets/ (lock project
+            // before scene to keep a consistent project → scene lock order).
+            let imported = if let Some(src) = args["image_path"].as_str() {
+                let proj = state.project.lock().await;
+                proj.as_ref().and_then(|p| p.import_asset(src).ok())
+            } else {
+                None
+            };
             let mut scene = state.scene.lock().await;
             let id = scene.alloc_id();
             let kind = parse_kind(args["type"].as_str());
@@ -87,6 +114,9 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
             apply_patch(&mut el, args);
             if let Some(p) = args.get("position").and_then(|v| v.as_array()) {
                 el.position = vec3(p, el.position);
+            }
+            if let Some(path) = imported {
+                el.image_path = Some(path);
             }
             scene.elements.push(el);
             text_content(format!("Added element '{id}'"))
@@ -176,7 +206,14 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
 
         "render_frame" => {
             let frame = args["frame"].as_f64().unwrap_or(1.0) as f32;
-            let out = args["output_path"].as_str().map(|s| s.to_string());
+            // Default the saved PNG into the project's renders/ folder.
+            let out = match args["output_path"].as_str() {
+                Some(p) => Some(p.to_string()),
+                None => {
+                    let proj = state.project.lock().await;
+                    proj.as_ref().map(|p| p.render_path(&format!("frame_{:05}", frame as u32), "png"))
+                }
+            };
             let scene = state.scene.lock().await.clone();
             let mut rg = state.renderer.lock().await;
             if rg.is_none() {
@@ -191,7 +228,7 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
                 Ok(b) => b,
                 Err(e) => return text_content(format!("Render error: {e}")),
             };
-            // Also write to disk if a path was requested.
+            // Also write to disk.
             if let Some(path) = &out {
                 if let Err(e) = r.render_to_png(&scene, frame, path) {
                     return text_content(format!("Render error writing to '{path}': {e}"));
@@ -206,7 +243,17 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
         }
 
         "render_animation" => {
-            let out = args["output_path"].as_str().unwrap_or("/tmp/juicer_demo").to_string();
+            // Default the MP4 into the project's renders/ folder.
+            let out = match args["output_path"].as_str() {
+                Some(p) => p.to_string(),
+                None => {
+                    let proj = state.project.lock().await;
+                    match proj.as_ref() {
+                        Some(p) => p.render_path("output", "mp4"),
+                        None => "/tmp/juicer_demo".to_string(),
+                    }
+                }
+            };
             let scene = state.scene.lock().await.clone();
             let mut rg = state.renderer.lock().await;
             if rg.is_none() {
@@ -221,10 +268,125 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
             }
         }
 
+        "capture_html" => capture_html(args, state).await,
+
+        "create_project" => {
+            let name = args["name"].as_str().unwrap_or("Untitled");
+            match Project::create(name) {
+                Ok(p) => {
+                    *state.scene.lock().await = crate::scene::Scene::default();
+                    let _ = p.save_scene(&state.scene.lock().await);
+                    let root = p.root.to_string_lossy().to_string();
+                    *state.project.lock().await = Some(p);
+                    text_content(format!(
+                        "Created project '{name}' at {root}\n\
+                         Scenes, captured HTML (assets/), and renders/ all live here."
+                    ))
+                }
+                Err(e) => text_content(format!("Could not create project: {e}")),
+            }
+        }
+
+        "open_project" => {
+            let path = args["path"].as_str().unwrap_or("");
+            match Project::open(path) {
+                Ok((p, scene)) => {
+                    if let Some(loaded) = scene {
+                        *state.scene.lock().await = loaded;
+                    }
+                    let root = p.root.to_string_lossy().to_string();
+                    *state.project.lock().await = Some(p);
+                    text_content(format!("Opened project at {root}"))
+                }
+                Err(e) => text_content(format!("Could not open project: {e}")),
+            }
+        }
+
+        "save_project" => {
+            let proj = state.project.lock().await;
+            match proj.as_ref() {
+                Some(p) => {
+                    match p.save_scene(&state.scene.lock().await) {
+                        Ok(()) => text_content(format!("Saved → {}", p.scene_path().to_string_lossy())),
+                        Err(e) => text_content(format!("Save failed: {e}")),
+                    }
+                }
+                None => text_content("No active project. Use create_project first."),
+            }
+        }
+
+        "get_project" => {
+            let proj = state.project.lock().await;
+            match proj.as_ref() {
+                Some(p) => text_content(format!(
+                    "Active project '{}'\nroot: {}\nassets: {}\nrenders: {}",
+                    p.name,
+                    p.root.to_string_lossy(),
+                    p.assets_dir().to_string_lossy(),
+                    p.renders_dir().to_string_lossy(),
+                )),
+                None => text_content("No active project."),
+            }
+        }
+
         "arrange_demo_layout" => arrange_demo_layout(args, state).await,
 
         _ => text_content(format!("Unknown tool: {tool}")),
     }
+}
+
+/// Capture HTML (with Tailwind/fonts/icons auto-injected) to a PNG in the
+/// project's assets/ folder, and optionally add it to the scene as a plane.
+async fn capture_html(args: &Value, state: &Arc<AppState>) -> Vec<Value> {
+    let html = args["html"].as_str().unwrap_or("");
+    if html.trim().is_empty() {
+        return text_content("capture_html needs an 'html' string.");
+    }
+    let name = args["name"].as_str().unwrap_or("capture").to_string();
+    let width = args["width"].as_u64().unwrap_or(1200) as u32;
+    let height = args["height"].as_u64().unwrap_or(800) as u32;
+    let font = args["font"].as_str();
+    let libraries: Vec<String> = args["libraries"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let add_plane = args["add_plane"].as_bool().unwrap_or(true);
+
+    // Output path inside the project's assets/.
+    let out = {
+        let proj = state.project.lock().await;
+        match proj.as_ref() {
+            Some(p) => p.asset_path(&name, "png"),
+            None => std::env::temp_dir().join(format!("{name}.png")).to_string_lossy().to_string(),
+        }
+    };
+
+    let wrapped = html_capture::wrap_html(html, &libraries, font);
+    if let Err(e) = html_capture::capture_html_to_png(&wrapped, width, height, &out).await {
+        return text_content(format!("HTML capture failed: {e}"));
+    }
+
+    if add_plane {
+        // Add a plane sized to the capture's aspect ratio, textured with the PNG.
+        let aspect = width as f32 / height.max(1) as f32;
+        let mut scene = state.scene.lock().await;
+        let id = scene.alloc_id();
+        let mut el = Element::new(id.clone(), name.clone(), crate::scene::ElementKind::Plane);
+        el.image_path = Some(out.clone());
+        el.width = 3.0;
+        el.height = 3.0 / aspect.max(0.01);
+        el.unlit = true;
+        scene.elements.push(el);
+        return text_content(format!(
+            "Captured '{name}' → {out}\nAdded plane '{id}' (image_path set, {:.2} aspect). \
+             Keyframe or reposition it next.",
+            aspect
+        ));
+    }
+
+    text_content(format!(
+        "Captured '{name}' → {out}\nUse add_element type=plane image_path={out} to place it."
+    ))
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -408,22 +570,67 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "render_frame",
-            "description": "Render a single frame to PNG using the native GPU renderer.",
+            "description": "Render a single frame with the native GPU renderer. Returns the image inline AND saves a PNG to the project's renders/ folder (override with output_path).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "frame": { "type": "number" },
-                    "output_path": { "type": "string" }
+                    "output_path": { "type": "string", "description": "Optional. Defaults to <project>/renders/frame_NNNNN.png" }
                 }
             }
         }),
         json!({
             "name": "render_animation",
-            "description": "Render the full frame range to an MP4 video using the native GPU renderer.",
+            "description": "Render the full frame range to an MP4. Saves to the project's renders/ folder by default (override with output_path).",
             "inputSchema": {
                 "type": "object",
-                "properties": { "output_path": { "type": "string", "description": "Output path, .mp4 appended if missing" } }
+                "properties": { "output_path": { "type": "string", "description": "Optional. Defaults to <project>/renders/output.mp4" } }
             }
+        }),
+        json!({
+            "name": "capture_html",
+            "description": "Render HTML/CSS to a transparent PNG via native WebKit and (by default) add it as a plane in the scene. Tailwind, Google Fonts, Lucide icons, Animate.css and Font Awesome are auto-injected — send raw component markup with Tailwind classes and it just works. Saves into the project's assets/ folder. This is how you bring brand visuals / UI into 3D.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["html"],
+                "properties": {
+                    "html": { "type": "string", "description": "HTML fragment (Tailwind classes OK) or a full document." },
+                    "name": { "type": "string", "description": "Asset/element name (default 'capture')." },
+                    "width": { "type": "number", "description": "Capture width px (default 1200)." },
+                    "height": { "type": "number", "description": "Capture height px (default 800)." },
+                    "font": { "type": "string", "description": "Google Font family to load (default 'Inter')." },
+                    "libraries": { "type": "array", "items": { "type": "string" }, "description": "Extra CSS/JS CDN URLs to inject." },
+                    "add_plane": { "type": "boolean", "description": "Add a textured plane to the scene (default true)." }
+                }
+            }
+        }),
+        json!({
+            "name": "create_project",
+            "description": "Create a new project folder (~/Movies/Juicer/<name>) with assets/ and renders/, and make it active. Scenes auto-save here. Start here for a new demo.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": { "name": { "type": "string" } }
+            }
+        }),
+        json!({
+            "name": "open_project",
+            "description": "Open an existing project folder by absolute path and load its scene.json.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": { "path": { "type": "string" } }
+            }
+        }),
+        json!({
+            "name": "save_project",
+            "description": "Explicitly save the current scene to the active project's scene.json (scenes also auto-save after every change).",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "get_project",
+            "description": "Show the active project's name and folder paths (assets/, renders/).",
+            "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
             "name": "arrange_demo_layout",

@@ -1,16 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSceneStore } from '../store/scene'
-import { Play, Pause, SkipBack, Video, Loader, Image } from 'lucide-react'
+import { Play, Pause, SkipBack, Video, Loader, Image, Save, Folder } from 'lucide-react'
 
 export function Toolbar() {
   const scene = useSceneStore((s) => s.scene)
+  const project = useSceneStore((s) => s.project)
+  const refreshProject = useSceneStore((s) => s.refreshProject)
+  const saveProject = useSceneStore((s) => s.saveProject)
   const frame = useSceneStore((s) => s.frame)
   const setFrame = useSceneStore((s) => s.setFrame)
   const renderPreview = useSceneStore((s) => s.renderPreview)
   const renderVideo = useSceneStore((s) => s.renderVideo)
   const isRendering = useSceneStore((s) => s.isRendering)
 
+  useEffect(() => { refreshProject() }, [refreshProject])
+
   const [playing, setPlaying] = useState(false)
+  const [saved, setSaved] = useState(false)
   const fps = scene?.render.fps ?? 30
   const frameEnd = scene?.render.frame_end ?? 300
   const frameStart = scene?.render.frame_start ?? 1
@@ -46,12 +52,22 @@ export function Toolbar() {
   const rewind = async () => { stopPlay(); setFrame(frameStart); await renderPreview(frameStart) }
 
   const doRender = async () => {
-    const out = `/tmp/juicer_${Date.now()}`
     try {
-      const path = await renderVideo(out)
+      // No path → backend saves into the active project's renders/ folder.
+      const path = await renderVideo()
       alert(`Render complete!\n${path}`)
     } catch (e: any) {
       alert(`Render error: ${e?.toString?.() ?? e}\n\nMake sure juicer-encoder is built (see README).`)
+    }
+  }
+
+  const doSave = async () => {
+    try {
+      await saveProject()
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+    } catch (e: any) {
+      alert(`Save error: ${e?.toString?.() ?? e}`)
     }
   }
 
@@ -64,6 +80,13 @@ export function Toolbar() {
         <span style={s.mode}>{(scene?.mode ?? 'lite').toUpperCase()}</span>
       </div>
 
+      {project && (
+        <div style={s.project} title={project.root}>
+          <Folder size={11} />
+          <span style={s.projectName}>{project.name}</span>
+        </div>
+      )}
+
       <div style={s.playback}>
         <button style={s.btn} onClick={rewind}><SkipBack size={13} /></button>
         <button style={{ ...s.btn, color: playing ? '#9977ff' : '#c8c8d4' }} onClick={onPlayClick}>
@@ -73,6 +96,9 @@ export function Toolbar() {
       </div>
 
       <div style={s.right}>
+        <button style={s.previewBtn} onClick={doSave}>
+          <Save size={12} /> {saved ? 'Saved ✓' : 'Save'}
+        </button>
         <button style={s.previewBtn} onClick={() => renderPreview()}>
           <Image size={12} /> Preview
         </button>
@@ -90,6 +116,8 @@ const s: Record<string, React.CSSProperties> = {
   brand: { display: 'flex', alignItems: 'baseline', gap: 8, ['WebkitAppRegion' as any]: 'no-drag' },
   logo: { fontWeight: 700, fontSize: 14, color: '#8866ff', letterSpacing: '-0.02em' },
   mode: { fontSize: 9, fontWeight: 700, color: '#44cc77', border: '1px solid rgba(68,204,119,0.3)', borderRadius: 4, padding: '1px 5px', letterSpacing: '0.08em' },
+  project: { display: 'flex', alignItems: 'center', gap: 5, color: '#7777aa', fontSize: 11, fontWeight: 600, background: '#141420', border: '1px solid #1e1e2e', borderRadius: 6, padding: '3px 8px', ['WebkitAppRegion' as any]: 'no-drag', maxWidth: 160, overflow: 'hidden' },
+  projectName: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   playback: { display: 'flex', alignItems: 'center', gap: 5, background: '#141420', padding: '4px 8px', borderRadius: 8, border: '1px solid #1e1e2e', ['WebkitAppRegion' as any]: 'no-drag' },
   btn: { display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', color: '#7777aa', cursor: 'pointer', padding: 5, borderRadius: 4 },
   tc: { fontFamily: 'monospace', fontSize: 11, color: '#555570', minWidth: 90 },

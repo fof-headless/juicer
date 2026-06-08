@@ -17,10 +17,10 @@ export function HtmlImporter() {
     if (!html.trim()) return
     setStatus('busy')
     setMsg('')
-    const out = `/tmp/juicer_capture_${Date.now()}.png`
-    const doc = `<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box;margin:0;padding:0}html,body{width:${width}px;height:${height}px;overflow:hidden;background:#0d0d18}</style></head><body>${html}</body></html>`
     try {
-      const path = await invoke<string>('capture_html', { html: doc, width, height, outputPath: out })
+      // Send the raw fragment — the backend injects Tailwind, Google Fonts,
+      // Lucide, etc., and captures on a transparent background into the project.
+      const path = await invoke<string>('capture_html', { html, width, height })
       const aspect = height / width
       await addElement('plane', name, { image_path: path, width: 4, height: 4 * aspect, unlit: true })
       await refresh()
@@ -56,7 +56,7 @@ export function HtmlImporter() {
           rows={8}
           value={html}
           onChange={(e) => setHtml(e.target.value)}
-          placeholder={`<div style="background:#1a1a3e;color:#fff;padding:32px;font-family:sans-serif;border-radius:16px;border:1px solid #6644ff">\n  <h1>Your Brand</h1>\n  <p>Paste your React/HTML output</p>\n</div>`}
+          placeholder={`<div class="bg-gray-900 text-white rounded-2xl p-8 border border-violet-500">\n  <h1 class="text-4xl font-bold text-violet-400">Your Brand</h1>\n  <p class="mt-2 text-gray-400">Tailwind classes work out of the box</p>\n</div>`}
         />
 
         <button style={{ ...s.btn, ...(status === 'busy' ? s.btnBusy : {}) }} onClick={capture} disabled={!html.trim() || status === 'busy'}>
@@ -67,7 +67,7 @@ export function HtmlImporter() {
         {status === 'done' && <div style={{ color: '#44cc77', fontSize: 11 }}>✓ {msg}</div>}
         {status === 'error' && <div style={{ color: '#cc4455', fontSize: 11, lineHeight: 1.5 }}>{msg}</div>}
 
-        <div style={s.hint}>Native macOS WebKit renders your HTML pixel-perfect, then it's applied as a GPU texture on a plane. Full CSS3, fonts, gradients.</div>
+        <div style={s.hint}>Native WebKit renders your HTML on a transparent background — Tailwind, Google Fonts, Lucide icons & Font Awesome are auto-loaded. Saved to your project's assets/ folder.</div>
       </div>
     </div>
   )

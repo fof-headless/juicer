@@ -51,8 +51,16 @@ export interface SceneData {
   mode: string
 }
 
+export interface ProjectInfo {
+  name: string
+  root: string
+  assets: string
+  renders: string
+}
+
 interface State {
   scene: SceneData | null
+  project: ProjectInfo | null
   selectedId: string | null
   frame: number
   isRendering: boolean
@@ -60,6 +68,7 @@ interface State {
   previewVersion: number
 
   refresh: () => Promise<void>
+  refreshProject: () => Promise<void>
   select: (id: string | null) => void
   setFrame: (f: number) => void
 
@@ -68,13 +77,17 @@ interface State {
   removeElement: (id: string) => Promise<void>
   setKeyframe: (id: string, frame: number, property: string, value: unknown, easing?: string) => Promise<void>
   renderPreview: (frame?: number) => Promise<void>
-  renderVideo: (outputPath: string) => Promise<string>
+  renderVideo: (outputPath?: string) => Promise<string>
   setRenderSettings: (patch: Partial<RenderSettings>) => Promise<void>
+
+  createProject: (name: string) => Promise<void>
+  saveProject: () => Promise<string>
 }
 
 export const useSceneStore = create<State>()(
   immer((set, get) => ({
     scene: null,
+    project: null,
     selectedId: null,
     frame: 1,
     isRendering: false,
@@ -87,6 +100,15 @@ export const useSceneStore = create<State>()(
         set((s) => { s.scene = scene })
       } catch (e) {
         console.error('refresh', e)
+      }
+    },
+
+    refreshProject: async () => {
+      try {
+        const project = await invoke<ProjectInfo | null>('get_project')
+        set((s) => { s.project = project })
+      } catch (e) {
+        console.error('refreshProject', e)
       }
     },
 
@@ -134,7 +156,7 @@ export const useSceneStore = create<State>()(
     renderVideo: async (outputPath) => {
       set((s) => { s.isRendering = true })
       try {
-        const out = await invoke<string>('render_video', { outputPath })
+        const out = await invoke<string>('render_video', { outputPath: outputPath ?? null })
         return out
       } finally {
         set((s) => { s.isRendering = false })
@@ -144,6 +166,18 @@ export const useSceneStore = create<State>()(
     setRenderSettings: async (patch) => {
       await invoke('set_render_settings', patch)
       await get().refresh()
+    },
+
+    createProject: async (name) => {
+      const project = await invoke<ProjectInfo>('create_project', { name })
+      set((s) => { s.project = project })
+      await get().refresh()
+    },
+
+    saveProject: async () => {
+      const path = await invoke<string>('save_project')
+      await get().refreshProject()
+      return path
     },
   }))
 )

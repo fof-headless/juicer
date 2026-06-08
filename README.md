@@ -127,16 +127,58 @@ No Python, no addon install, no port juggling — the thing Blender-MCP makes pa
 
 | Tool | Action |
 |---|---|
+| `create_project` / `open_project` | Make/open a project folder (see **Projects** below) |
+| `save_project` / `get_project` | Save scene / show project paths |
 | `get_scene` | Full scene JSON — elements, keyframes, camera, render settings |
+| `capture_html` | Render HTML/CSS (Tailwind, fonts, icons auto-injected) → transparent PNG → plane |
 | `add_element` | plane / box / sphere (plane + `image_path` = your HTML/brand visual) |
 | `update_element` | Move, rotate, scale, recolor, opacity, swap image |
 | `remove_element` | Delete |
 | `set_keyframe` | Keyframe position/rotation/scale/opacity with easing |
 | `set_camera` / `set_keyframe_camera` | Static or animated camera |
 | `set_render_settings` | Resolution, fps, frame range, background |
-| `render_frame` | Single PNG via wgpu |
+| `render_frame` | Single PNG via wgpu (returned inline + saved to renders/) |
 | `render_animation` | Full MP4 via wgpu + native encoder |
 | `arrange_demo_layout` | One-shot starter composition |
+
+---
+
+## Projects — where your work lives
+
+Everything is saved to a **project folder** (no more `/tmp` hunting):
+
+```
+~/Movies/Juicer/<name>/
+  scene.json     ← the whole scene; auto-saved after every change
+  assets/        ← captured HTML PNGs, imported images
+  renders/       ← frame PNGs and exported MP4s
+```
+
+On first launch Juicer opens-or-creates a **Default** project, so there's
+always a home on disk and a restart restores your scene. Ask Claude to
+*"create a project called Acme"* (`create_project`) to start a clean one.
+`render_frame`/`render_animation` default their output into `renders/`, and
+`capture_html` writes into `assets/`.
+
+## Tailwind & web libraries
+
+`capture_html` auto-injects the common web stack, so you can send raw
+component markup and it renders correctly:
+
+- **Tailwind** (full JIT via Play CDN)
+- **Google Fonts** (default Inter; override with `font`)
+- **Lucide** icons, **Font Awesome**, **Animate.css**
+- Anything else via the `libraries` array (CDN URLs)
+
+```
+"Capture this and drop it into the scene:
+ <div class='bg-gray-900 text-white rounded-2xl p-8'>
+   <h1 class='text-4xl font-bold text-violet-400'>Acme</h1>
+ </div>"
+```
+
+Captures render on a **transparent background**, so cards composite cleanly
+onto 3D planes.
 
 ---
 
