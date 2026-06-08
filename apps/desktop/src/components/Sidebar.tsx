@@ -25,7 +25,7 @@ export function Sidebar() {
           <span style={s.badge}>{elements.length}</span>
         </div>
         <div style={s.list}>
-          {elements.length === 0 && <div style={s.empty}>Empty scene. Add elements below.</div>}
+          {elements.length === 0 && <div style={s.empty}>No elements yet. Use the buttons below to add shapes, or paste HTML in the panel below.</div>}
           {elements.map((el) => (
             <div
               key={el.id}

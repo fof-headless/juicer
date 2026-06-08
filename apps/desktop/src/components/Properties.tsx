@@ -15,8 +15,11 @@ export function Properties() {
 
   if (!el) {
     return (
-      <div style={{ ...s.panel, alignItems: 'center', justifyContent: 'center', color: '#333344' }}>
-        Select an element
+      <div style={{ ...s.panel, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 20 }}>
+        <div style={{ fontSize: 22, opacity: 0.3 }}>☰</div>
+        <div style={{ color: '#444460', textAlign: 'center', fontSize: 11, lineHeight: 1.7 }}>
+          Click an element in the<br />Scene list to edit its<br />properties and keyframes.
+        </div>
       </div>
     )
   }
@@ -63,8 +66,8 @@ export function Properties() {
         )}
       </Section>
 
-      <Section title="Keyframe">
-        <Row label="Frame"><span style={s.val}>{frame}</span></Row>
+      <Section title="Keyframe at Frame">
+        <Row label="Frame"><span style={{ ...s.val, color: '#6644ff', fontWeight: 700 }}>f{frame}</span><span style={{ fontSize: 10, color: '#333344', marginLeft: 4 }}>← drag timeline below</span></Row>
         <Row label="Property">
           <select style={s.select} value={kfProp} onChange={(e) => setKfProp(e.target.value as any)}>
             <option value="position">Position</option>

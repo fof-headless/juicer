@@ -184,10 +184,19 @@ pub fn find_helper_binary(name: &str) -> String {
             return p.to_string_lossy().into_owned();
         }
     }
-    // 2. Next to the running executable (packaged .app / Resources).
+    // 2. Next to the running executable OR in the bundled Resources hierarchy.
+    // In a packaged .app Tauri copies resources to Contents/Resources/<name>,
+    // so the executable is at Contents/MacOS/juicer and binaries land at
+    // Contents/Resources/bin/<name> (or Contents/Resources/<name>).
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(d) = exe.parent() {
-            for cand in [d.join(name), d.join("bin").join(name)] {
+        if let Some(macos) = exe.parent() {
+            for cand in [
+                macos.join(name),
+                macos.join("bin").join(name),
+                // Packaged .app: Contents/MacOS → ../Resources
+                macos.join("../Resources/bin").join(name),
+                macos.join("../Resources").join(name),
+            ] {
                 if cand.exists() {
                     return cand.to_string_lossy().into_owned();
                 }
