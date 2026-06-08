@@ -198,13 +198,19 @@ async fn set_camera(
     Ok(())
 }
 
-/// Render a single frame to PNG, return the path (used for viewport preview).
+/// Render a single frame to PNG at reduced resolution, return the path (viewport preview).
+/// Uses a capped 960×540 resolution so the preview is fast (~1–2s vs 30s at full res).
 #[tauri::command]
 async fn render_preview(
     state: State<'_, SharedState>,
     frame: f32,
 ) -> Result<String, String> {
-    let scene = state.scene.lock().await.clone();
+    let mut scene = state.scene.lock().await.clone();
+    // Cap preview resolution to 960×540 for speed (the canvas viewport handles real-time editing).
+    let scale = (960.0 / scene.render.width as f32).min(1.0);
+    scene.render.width = (scene.render.width as f32 * scale) as u32;
+    scene.render.height = (scene.render.height as f32 * scale) as u32;
+
     let mut renderer_guard = state.renderer.lock().await;
     if renderer_guard.is_none() {
         *renderer_guard = Some(Renderer::new().map_err(|e| e.to_string())?);
