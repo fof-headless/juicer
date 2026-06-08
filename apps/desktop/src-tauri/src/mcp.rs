@@ -275,7 +275,7 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
             match Project::create(name) {
                 Ok(p) => {
                     *state.scene.lock().await = crate::scene::Scene::default();
-                    let _ = p.save_scene(&state.scene.lock().await);
+                    let _ = p.save_scene(&*state.scene.lock().await);
                     let root = p.root.to_string_lossy().to_string();
                     *state.project.lock().await = Some(p);
                     text_content(format!(
@@ -306,7 +306,7 @@ async fn handle_tool(tool: &str, args: &Value, state: &Arc<AppState>) -> Vec<Val
             let proj = state.project.lock().await;
             match proj.as_ref() {
                 Some(p) => {
-                    match p.save_scene(&state.scene.lock().await) {
+                    match p.save_scene(&*state.scene.lock().await) {
                         Ok(()) => text_content(format!("Saved → {}", p.scene_path().to_string_lossy())),
                         Err(e) => text_content(format!("Save failed: {e}")),
                     }

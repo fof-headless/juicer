@@ -313,7 +313,7 @@ async fn create_project(
     // Fresh scene for a new project.
     *state.scene.lock().await = Scene::default();
     let info = project_info(&p);
-    p.save_scene(&state.scene.lock().await).map_err(|e| e.to_string())?;
+    p.save_scene(&*state.scene.lock().await).map_err(|e| e.to_string())?;
     *state.project.lock().await = Some(p);
     Ok(info)
 }
@@ -337,7 +337,7 @@ async fn save_project(state: State<'_, SharedState>) -> Result<String, String> {
     let proj = state.project.lock().await;
     match proj.as_ref() {
         Some(p) => {
-            p.save_scene(&state.scene.lock().await).map_err(|e| e.to_string())?;
+            p.save_scene(&*state.scene.lock().await).map_err(|e| e.to_string())?;
             Ok(p.scene_path().to_string_lossy().to_string())
         }
         None => Err("no active project".into()),
