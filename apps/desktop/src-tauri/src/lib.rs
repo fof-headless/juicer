@@ -5,6 +5,7 @@ mod mcp;
 mod html_capture;
 mod video;
 mod project;
+mod blender;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -252,6 +253,50 @@ async fn render_video(
     video::render_animation(renderer, &scene, &out).map_err(|e| e.to_string())
 }
 
+/// Render via the forked Blender binary (see /blender-fork). Writes the current
+/// scene to the project's scene.json, then drives Blender natively (--juicer).
+/// `single_frame` renders just one frame (preview); otherwise the full range.
+#[tauri::command]
+async fn render_blender(
+    state: State<'_, SharedState>,
+    output_path: Option<String>,
+    single_frame: Option<u32>,
+) -> Result<String, String> {
+    // Persist the scene to disk so the Blender fork can ingest it.
+    let scene_path = {
+        let proj = state.project.lock().await;
+        match proj.as_ref() {
+            Some(p) => {
+                p.save_scene(&*state.scene.lock().await).map_err(|e| e.to_string())?;
+                p.scene_path().to_string_lossy().to_string()
+            }
+            None => {
+                let tmp = std::env::temp_dir().join("juicer_scene.json");
+                let json = serde_json::to_string_pretty(&*state.scene.lock().await)
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+                tmp.to_string_lossy().to_string()
+            }
+        }
+    };
+
+    let out = match output_path.filter(|s| !s.is_empty()) {
+        Some(p) => p,
+        None => {
+            let proj = state.project.lock().await;
+            match proj.as_ref() {
+                Some(p) => p.render_path("blender", "mp4"),
+                None => std::env::temp_dir().join("juicer_blender.mp4").to_string_lossy().to_string(),
+            }
+        }
+    };
+
+    tauri::async_runtime::spawn_blocking(move || blender::render(&scene_path, &out, single_frame))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn save_scene_json(state: State<'_, SharedState>, path: String) -> Result<(), String> {
     let scene = state.scene.lock().await;
@@ -463,6 +508,7 @@ pub fn run() {
             set_camera,
             render_preview,
             render_video,
+            render_blender,
             save_scene_json,
             load_scene_json,
             capture_html,
