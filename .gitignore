@@ -10,3 +10,10 @@ build/
 pnpm-lock.yaml
 package-lock.json
 yarn.lock
+
+# Rust / Tauri build output
+target/
+
+# Blender fork build artifacts (cloned source + compiled binary, ~40GB)
+blender-fork/blender/
+blender-fork/build-blender/
