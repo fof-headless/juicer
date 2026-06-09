@@ -22,10 +22,14 @@ def main(target: str, snippet_path: str) -> int:
         src = re.sub(r'(#include [^\n]+\n)',
                      r'\1#include "IO_juicer.hh"\n', src, count=1)
 
-    # 2) handler — insert just before setupArguments definition.
-    m = re.search(r'\n(\w[\w\s\*:]*setupArguments\s*\()', src)
+    # 2) handler — insert just before main_args_setup definition.
+    #    (Older Blender called this setupArguments(); 5.x uses main_args_setup().)
+    m = re.search(r'\nvoid\s+main_args_setup\s*\(', src)
     if not m:
-        print("inject_cli: could not find setupArguments()", file=sys.stderr)
+        m = re.search(r'\n(\w[\w\s\*:]*setupArguments\s*\()', src)
+    if not m:
+        print("inject_cli: could not find main_args_setup()/setupArguments()",
+              file=sys.stderr)
         return 1
     # Extract just the handler function from the snippet (between the marker comments).
     handler = snippet

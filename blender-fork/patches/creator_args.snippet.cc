@@ -7,6 +7,9 @@
  *   3. `#include "IO_juicer.hh"` near the top of creator_args.cc
  * ──────────────────────────────────────────────────────────────────────────── */
 
+static const char arg_handle_juicer_scene_doc[] =
+    "<scene.json>\n"
+    "\tImport a Juicer scene.json and render it natively (no Python).";
 static int arg_handle_juicer_scene(int argc, const char **argv, void *data)
 {
   bContext *C = static_cast<bContext *>(data);
