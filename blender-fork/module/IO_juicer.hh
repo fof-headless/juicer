@@ -13,7 +13,12 @@
 
 #pragma once
 
+/* In Blender 5.x bContext is forward-declared inside `namespace blender`
+ * (see BKE_context.hh), so we must match that here — a global `struct
+ * bContext;` would create a distinct ::bContext type and break linking. */
+namespace blender {
 struct bContext;
+}
 
 namespace blender::io::juicer {
 
