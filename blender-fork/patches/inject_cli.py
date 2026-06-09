@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Splice the Juicer --juicer CLI flag into Blender's creator_args.cc.
 
-Idempotent: safe to run repeatedly. Inserts three things:
-  1. #include "IO_juicer.hh"
-  2. the arg_handle_juicer_scene() handler (from the snippet file)
-  3. BLI_args_add(... "--juicer" ...) inside setupArguments()
+Idempotent: safe to run repeatedly. Inserts two things:
+  1. The arg_handle_juicer_scene() handler + forward declaration (from snippet)
+  2. BLI_args_add(... "--juicer" ...) inside main_args_setup()
+
+(No separate #include injection — the forward declaration is embedded in the
+snippet itself, avoiding include-path issues in the creator compile unit.)
 """
 import re
 import sys
@@ -17,13 +19,7 @@ def main(target: str, snippet_path: str) -> int:
         print("inject_cli: already patched")
         return 0
 
-    # 1) include — after the first existing #include line.
-    if '#include "IO_juicer.hh"' not in src:
-        src = re.sub(r'(#include [^\n]+\n)',
-                     r'\1#include "IO_juicer.hh"\n', src, count=1)
-
-    # 2) handler — insert just before main_args_setup definition.
-    #    (Older Blender called this setupArguments(); 5.x uses main_args_setup().)
+    # 1) handler + forward declaration — insert just before main_args_setup.
     m = re.search(r'\nvoid\s+main_args_setup\s*\(', src)
     if not m:
         m = re.search(r'\n(\w[\w\s\*:]*setupArguments\s*\()', src)
@@ -31,11 +27,9 @@ def main(target: str, snippet_path: str) -> int:
         print("inject_cli: could not find main_args_setup()/setupArguments()",
               file=sys.stderr)
         return 1
-    # Extract just the handler function from the snippet (between the marker comments).
-    handler = snippet
-    src = src[:m.start()] + "\n" + handler + "\n" + src[m.start():]
+    src = src[:m.start()] + "\n" + snippet + "\n" + src[m.start():]
 
-    # 3) registration — next to the --python registration line.
+    # 2) registration — next to the --python registration line.
     reg = '  BLI_args_add(ba, nullptr, "--juicer", CB(arg_handle_juicer_scene), C);\n'
     src, n = re.subn(r'(BLI_args_add\(ba, "-P", "--python",[^\n]*\n)',
                      r'\1' + reg, src, count=1)

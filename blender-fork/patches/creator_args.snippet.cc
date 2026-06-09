@@ -1,11 +1,19 @@
 /* ─────────────────────────────────────────────────────────────────────────────
  * JUICER FORK — CLI flag `--juicer <scene.json>`
  *
- * build-fork.sh injects:
- *   1. this handler function, before `setupArguments()` in creator_args.cc
- *   2. the BLI_args_add registration line (below) inside setupArguments()
- *   3. `#include "IO_juicer.hh"` near the top of creator_args.cc
+ * inject_cli.py splices this entire block just before main_args_setup() in
+ * creator_args.cc.  The forward declaration makes the linker find the symbol
+ * without needing IO_juicer.hh in the creator's -I paths.
  * ──────────────────────────────────────────────────────────────────────────── */
+
+/* Forward declaration — defined in bf_io_juicer (source/blender/io/juicer). */
+struct bContext;
+namespace blender::io::juicer {
+bool import_and_render(bContext *C,
+                       const char *json_path,
+                       const char *out_path,
+                       int single_frame);
+}
 
 static const char arg_handle_juicer_scene_doc[] =
     "<scene.json>\n"
@@ -14,31 +22,23 @@ static int arg_handle_juicer_scene(int argc, const char **argv, void *data)
 {
   bContext *C = static_cast<bContext *>(data);
   if (argc < 2) {
-    fprintf(stderr, "\nError: --juicer requires <scene.json> [--juicer-out <path>] \n");
+    fprintf(stderr, "\nError: --juicer requires <scene.json>\n");
     return 0;
   }
   char json_path[FILE_MAX];
   STRNCPY(json_path, argv[1]);
   BLI_path_canonicalize_native(json_path, sizeof(json_path));
 
-  /* Output path comes from the standard -o/--render-output, already parsed. */
+  /* Output path: use the -o/--render-output value that was already parsed. */
   Scene *scene = CTX_data_scene(C);
-  const char *out = scene ? scene->r.pic : "//juicer_out/";
+  const char *out = (scene && scene->r.pic[0]) ? scene->r.pic : "/tmp/juicer_out/";
 
-  /* single-frame override via env JUICER_FRAME (set by Juicer for previews). */
   int single = -1;
   if (const char *f = getenv("JUICER_FRAME")) {
     single = atoi(f);
   }
 
   bool ok = blender::io::juicer::import_and_render(C, json_path, out, single);
-  if (!ok && app_state.exit_code_on_error.python) {
-    WM_exit(C, app_state.exit_code_on_error.python);
-  }
-  return 1; /* consume the scene.json argument */
+  exit(ok ? 0 : 1);
+  return 1;
 }
-
-/* Registration line — injected into setupArguments(), next to the --python add:
- *
- *   BLI_args_add(ba, nullptr, "--juicer", CB(arg_handle_juicer_scene), C);
- */

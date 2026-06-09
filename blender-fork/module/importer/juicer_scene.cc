@@ -37,7 +37,7 @@
 
 #include "BKE_constraint.h"
 #include "BKE_context.hh"
-#include "BKE_idprop.h"
+#include "BKE_idprop.hh"
 #include "BKE_image.hh"
 #include "BKE_lib_id.hh"
 #include "BKE_light.hh"
@@ -223,13 +223,6 @@ static Mesh *make_sphere_mesh()
 
 /* ── Material helpers ─────────────────────────────────────────────────────── */
 
-/**
- * Unlit emission material:
- *   [Image Texture] → Emission.Color → [Mix Shader (factor=opacity)] → Surface
- *                                       Transparent BSDF ──────────────┘
- * The MixShader factor is driven by object custom property "opacity"
- * so opacity F-curves can target "[\"opacity\"]" on the Object.
- */
 static Material *make_unlit_material(Main *bmain,
                                      const std::string &name,
                                      const float color[3],
@@ -244,15 +237,12 @@ static Material *make_unlit_material(Main *bmain,
   mat->nodetree = ntree;
   ntreeSetTypes(nullptr, ntree);
 
-  /* Output */
   bNode *out = nodeAddStaticNode(nullptr, ntree, SH_NODE_OUTPUT_MATERIAL);
   out->locx = 420; out->locy = 0;
 
-  /* Transparent BSDF */
   bNode *transp = nodeAddStaticNode(nullptr, ntree, SH_NODE_BSDF_TRANSPARENT);
   transp->locx = 0; transp->locy = -140;
 
-  /* Mix Shader (factor = opacity) */
   bNode *mix = nodeAddStaticNode(nullptr, ntree, SH_NODE_MIX_SHADER);
   mix->locx = 220; mix->locy = 0;
   {
@@ -260,18 +250,15 @@ static Material *make_unlit_material(Main *bmain,
     if (fac) ((bNodeSocketValueFloat *)fac->default_value)->value = opacity;
   }
 
-  /* Emission */
   bNode *emit = nodeAddStaticNode(nullptr, ntree, SH_NODE_EMISSION);
   emit->locx = 0; emit->locy = 60;
 
-  /* Strength = 1 */
   bNodeSocket *strength = nodeFindSocket(emit, SOCK_IN, "Strength");
   if (strength) ((bNodeSocketValueFloat *)strength->default_value)->value = 1.0f;
 
   bNodeSocket *emit_col = nodeFindSocket(emit, SOCK_IN, "Color");
 
   if (!image_path.empty()) {
-    /* Image Texture → Emission color */
     bNode *tex = nodeAddStaticNode(nullptr, ntree, SH_NODE_TEX_IMAGE);
     tex->locx = -200; tex->locy = 60;
     Image *img = BKE_image_load_exists(bmain, image_path.c_str());
@@ -282,7 +269,6 @@ static Material *make_unlit_material(Main *bmain,
     bNodeSocket *fac_sock = (bNodeSocket *)BLI_findlink(&mix->inputs, 0);
 
     if (tex_col && emit_col) nodeAddLink(ntree, tex, tex_col, emit, emit_col);
-    /* Use texture alpha to modulate the mix factor as well */
     if (tex_alpha && fac_sock) nodeAddLink(ntree, tex, tex_alpha, mix, fac_sock);
   }
   else if (emit_col) {
@@ -291,7 +277,6 @@ static Material *make_unlit_material(Main *bmain,
     rgba->value[2] = color[2]; rgba->value[3] = 1.0f;
   }
 
-  /* Wire: transp → mix[1], emit → mix[2], mix → output */
   bNodeSocket *transp_out = nodeFindSocket(transp, SOCK_OUT, "BSDF");
   bNodeSocket *emit_out   = nodeFindSocket(emit,   SOCK_OUT, "Emission");
   bNodeSocket *mix_in1    = (bNodeSocket *)BLI_findlink(&mix->inputs, 1);
@@ -307,14 +292,8 @@ static Material *make_unlit_material(Main *bmain,
   return mat;
 }
 
-/**
- * Add a custom float property "opacity" to the object and install a driver
- * on the MixShader factor socket that reads it.
- * This lets us insert F-curve keys on ob["opacity"] to animate fade.
- */
 static void setup_opacity_driver(Main *bmain, Object *ob, Material *mat)
 {
-  /* Custom property */
   IDPropertyTemplate fval = {};
   fval.f = 1.0f;
   IDProperty *prop = IDP_New(IDP_FLOAT, &fval, "opacity");
@@ -326,7 +305,6 @@ static void setup_opacity_driver(Main *bmain, Object *ob, Material *mat)
 
   if (!mat || !mat->nodetree) return;
 
-  /* Find MixShader node */
   bNode *mix = nullptr;
   LISTBASE_FOREACH (bNode *, n, &mat->nodetree->nodes) {
     if (n->type == SH_NODE_MIX_SHADER) { mix = n; break; }
@@ -336,7 +314,6 @@ static void setup_opacity_driver(Main *bmain, Object *ob, Material *mat)
   bNodeSocket *fac = (bNodeSocket *)BLI_findlink(&mix->inputs, 0);
   if (!fac) return;
 
-  /* Build driver on material's node socket via AnimData */
   char node_path[512];
   BLI_snprintf(node_path, sizeof(node_path),
                "node_tree.nodes[\"%s\"].inputs[0].default_value", mix->name);
@@ -394,12 +371,8 @@ static void insert_key(Object *ob,
     bz.easing = m.easing;
   }
 
-  /* Attach fcu to the object's AnimData if it isn't already there. */
   AnimData *adt = BKE_animdata_ensure_id(&ob->id);
-  if (adt && adt->action) {
-    /* action_fcurve_ensure_ex may have already added it; noop if so. */
-  }
-  UNUSED_VARS(ob);
+  UNUSED_VARS(adt, ob);
 }
 
 static void insert_vec3_key(Object *ob,
@@ -437,7 +410,6 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
   }
   std::fclose(fp);
 
-  /* ── Render settings ── */
   if (doc.contains("render")) {
     const json &r = doc["render"];
     scene->r.xsch = r.value("width", 1920);
@@ -456,7 +428,6 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
     }
   }
 
-  /* ── Directional light ── */
   if (doc.contains("light")) {
     const json &jl = doc["light"];
     Object *light_ob = BKE_object_add(bmain, scene, view_layer, OB_LAMP, "JuicerSun");
@@ -473,13 +444,12 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
       float quat[4];
       float ref[3] = {0.0f, 0.0f, -1.0f};
       normalize_v3(d);
-      negate_v3(d); /* point -Z toward light direction */
+      negate_v3(d);
       rotation_between_vecs_to_quat(quat, ref, d);
       quat_to_eulO(light_ob->rot, EULER_ORDER_DEFAULT, quat);
     }
   }
 
-  /* ── Elements ── */
   for (const json &el : doc.value("elements", json::array())) {
     const std::string kind = el.value("kind", "plane");
     const std::string name = el.value("name", "Element");
@@ -504,17 +474,15 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
       Mesh *me = make_box_mesh();
       BKE_mesh_nomain_to_mesh(me, static_cast<Mesh *>(ob->data), ob);
     }
-    else { /* sphere */
+    else {
       Mesh *me = make_sphere_mesh();
       BKE_mesh_nomain_to_mesh(me, static_cast<Mesh *>(ob->data), ob);
     }
 
-    /* Visibility */
     if (!el.value("visible", true)) {
       ob->visibility_flag |= OB_HIDE_VIEWPORT | OB_HIDE_RENDER;
     }
 
-    /* Base transform */
     if (el.contains("position")) {
       const json &p = el["position"];
       ob->loc[0] = p[0]; ob->loc[1] = p[1]; ob->loc[2] = p[2];
@@ -532,7 +500,6 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
       ob->size[2] = s[2].get<float>();
     }
 
-    /* Material */
     Material *mat = nullptr;
     if (unlit) {
       mat = make_unlit_material(bmain, name + "_mat", color, opacity, img_path);
@@ -542,7 +509,6 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
       mat = BKE_material_add(bmain, (name + "_mat").c_str());
       mat->use_nodes = true;
       ED_node_shader_default(nullptr, &mat->id);
-      /* Tint the Principled BSDF base color */
       if (mat->nodetree) {
         LISTBASE_FOREACH (bNode *, n, &mat->nodetree->nodes) {
           if (n->type == SH_NODE_BSDF_PRINCIPLED) {
@@ -559,7 +525,6 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
     }
     if (mat) BKE_object_material_assign(bmain, ob, mat, 1, BKE_MAT_ASSIGN_OBDATA);
 
-    /* ── Keyframe tracks ── */
     for (const json &nt : el.value("tracks", json::array())) {
       const std::string prop = nt.value("property", "");
       for (const json &k : nt["track"]["keys"]) {
@@ -576,7 +541,6 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
           insert_vec3_key(ob, "scale", frame, k["value"], easing);
         }
         else if (prop == "opacity") {
-          /* Key the custom property; driver routes it to the MixShader factor. */
           float val = k["value"].is_array() ? k["value"][0].get<float>() : k["value"].get<float>();
           insert_key(ob, "[\"opacity\"]", 0, frame, val, easing);
         }
@@ -584,13 +548,11 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
     }
   }
 
-  /* ── Camera ── */
   if (doc.contains("camera")) {
     const json &cam = doc["camera"];
     Object *cam_ob = BKE_object_add(bmain, scene, view_layer, OB_CAMERA, "JuicerCamera");
     scene->camera = cam_ob;
 
-    /* FoV → focal length */
     Camera *cam_data = (Camera *)cam_ob->data;
     float fov_deg = cam.value("fov_deg", 45.0f);
     float fov_rad = fov_deg * (float)M_PI / 180.0f;
@@ -603,7 +565,6 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
       cam_ob->loc[0] = p[0]; cam_ob->loc[1] = p[1]; cam_ob->loc[2] = p[2];
     }
 
-    /* Track-To constraint: camera points at target Empty */
     if (cam.contains("target")) {
       const json &t = cam["target"];
       Object *target = BKE_object_add(bmain, scene, view_layer, OB_EMPTY, "JuicerCamTarget");
@@ -612,12 +573,11 @@ bool import_and_render(bContext *C, const char *json_path, const char *out_path,
       bConstraint *con = BKE_constraint_add_for_object(cam_ob, "TrackTo", CONSTRAINT_TYPE_TRACKTO);
       bTrackToConstraint *tt = (bTrackToConstraint *)con->data;
       tt->tar = target;
-      tt->reserved1 = TRACK_nZ; /* camera looks along -Z */
+      tt->reserved1 = TRACK_nZ;
       tt->reserved2 = UP_Y;
     }
   }
 
-  /* ── Output path & render ── */
   BLI_strncpy(scene->r.pic, out_path, sizeof(scene->r.pic));
 
   DEG_relations_tag_update(bmain);
