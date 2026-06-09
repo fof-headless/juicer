@@ -2,13 +2,16 @@
  * JUICER FORK — CLI flag `--juicer <scene.json>`
  *
  * inject_cli.py splices this entire block just before main_args_setup() in
- * creator_args.cc.  The forward declaration makes the linker find the symbol
- * without needing IO_juicer.hh in the creator's -I paths.
- * ──────────────────────────────────────────────────────────────────────────── */
+ * creator_args.cc.  That injection point is INSIDE `namespace blender`, so the
+ * forward declaration uses `namespace io::juicer` (which resolves to
+ * blender::io::juicer) and relies on the global `bContext` already in scope —
+ * no `blender::` prefix and no redundant `struct bContext;` (that would create
+ * a bogus blender::bContext type and break linking).
+ * ───────────────────────────────────────────────────────────────────────────── */
 
-/* Forward declaration — defined in bf_io_juicer (source/blender/io/juicer). */
-struct bContext;
-namespace blender::io::juicer {
+/* Forward declaration — defined in bf_io_juicer (source/blender/io/juicer).
+ * We are already inside `namespace blender`, so this is blender::io::juicer. */
+namespace io::juicer {
 bool import_and_render(bContext *C,
                        const char *json_path,
                        const char *out_path,
@@ -38,7 +41,7 @@ static int arg_handle_juicer_scene(int argc, const char **argv, void *data)
     single = atoi(f);
   }
 
-  bool ok = blender::io::juicer::import_and_render(C, json_path, out, single);
+  bool ok = io::juicer::import_and_render(C, json_path, out, single);
   exit(ok ? 0 : 1);
   return 1;
 }
