@@ -12,6 +12,7 @@
 # Usage:
 #   ./build-fork.sh           # clone + patch + build into ./build-blender
 #   ./build-fork.sh patch     # only (re)apply our module + patches
+#   ./build-fork.sh build     # only (re)compile (incremental; no clone/patch)
 set -euo pipefail
 
 PINNED=1957ef3271c5a38e4f561aaf1ff67d735d3abead
@@ -47,7 +48,7 @@ patch_in() {
   grep -q "bf_io_juicer" "$creator_cmake" || \
     sed -i.bak 's/\(list(APPEND LIB[[:space:]]*\)/\1\n    bf_io_juicer/' "$creator_cmake" || true
 
-  # 3) Inject the CLI handler + include + registration into creator_args.cc.
+  # 3) Inject the CLI handler + registration into creator_args.cc.
   python3 "$HERE/patches/inject_cli.py" "$SRC/source/creator/creator_args.cc" \
           "$HERE/patches/creator_args.snippet.cc"
   echo "==> Patch complete"
@@ -64,6 +65,7 @@ build() {
 
 case "${1:-all}" in
   patch) patch_in ;;
+  build) build ;;
   all)   clone; patch_in; build ;;
-  *)     echo "usage: $0 [all|patch]"; exit 1 ;;
+  *)     echo "usage: $0 [all|patch|build]"; exit 1 ;;
 esac
