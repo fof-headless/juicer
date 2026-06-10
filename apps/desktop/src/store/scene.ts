@@ -2,53 +2,67 @@ import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { invoke } from '@tauri-apps/api/core'
 
-export type ElementKind = 'plane' | 'box' | 'sphere'
+// ── Types mirroring scene.rs ──────────────────────────────────────────────────
+
+export type LayerKind = 'html' | 'image' | 'shape' | 'text'
 
 export interface NamedTrack {
   property: string
-  track: { keys: Array<{ frame: number; value: number | [number, number, number]; easing: string }> }
+  track: { keys: Array<{ frame: number; value: unknown; easing: unknown }> }
 }
 
-export interface Element {
+export interface Transform2_5D {
+  x: number
+  y: number
+  rotation: number
+  scale_x: number
+  scale_y: number
+  rotate_x: number
+  rotate_y: number
+  perspective: number
+  origin_x: number
+  origin_y: number
+}
+
+export interface BoxShadow {
+  offset_x: number
+  offset_y: number
+  blur: number
+  spread: number
+  color: string
+  inset: boolean
+}
+
+export interface Effects {
+  shadows: BoxShadow[]
+  filter_blur: number
+}
+
+export interface Layer {
   id: string
   name: string
-  kind: ElementKind
-  position: [number, number, number]
-  rotation: [number, number, number]
-  scale: [number, number, number]
-  visible: boolean
-  color: string
-  opacity: number
-  image_path: string | null
+  kind: { type: LayerKind } & Record<string, unknown>
   width: number
   height: number
-  unlit: boolean
+  transform: Transform2_5D
+  opacity: number
+  visible: boolean
+  blend_mode: string
+  effects: Effects
   tracks: NamedTrack[]
 }
 
-export interface RenderSettings {
+export interface Canvas {
   width: number
   height: number
   fps: number
-  frame_start: number
-  frame_end: number
-  background: [number, number, number, number]
-}
-
-export interface Camera {
-  position: [number, number, number]
-  target: [number, number, number]
-  fov_deg: number
-  near: number
-  far: number
-  tracks: NamedTrack[]
+  background: string
 }
 
 export interface SceneData {
-  elements: Element[]
-  camera: Camera
-  render: RenderSettings
-  mode: string
+  layers: Layer[]
+  canvas: Canvas
+  duration_frames: number
 }
 
 export interface ProjectInfo {
@@ -58,29 +72,64 @@ export interface ProjectInfo {
   renders: string
 }
 
+// ── Store ─────────────────────────────────────────────────────────────────────
+
 interface State {
   scene: SceneData | null
   project: ProjectInfo | null
   selectedId: string | null
   frame: number
+  playing: boolean
   isRendering: boolean
-  previewUrl: string | null
-  previewVersion: number
 
+  // High-level
   refresh: () => Promise<void>
   refreshProject: () => Promise<void>
-  select: (id: string | null) => void
+  call: <T = unknown>(tool: string, args?: Record<string, unknown>) => Promise<T>
   setFrame: (f: number) => void
+  select: (id: string | null) => void
+  setPlaying: (p: boolean) => void
 
-  addElement: (kind: ElementKind, name: string, extra?: Partial<Element>) => Promise<string>
-  updateElement: (id: string, patch: Record<string, unknown>) => Promise<void>
-  removeElement: (id: string) => Promise<void>
-  setKeyframe: (id: string, frame: number, property: string, value: unknown, easing?: string) => Promise<void>
-  renderPreview: (frame?: number) => Promise<void>
-  renderVideo: (outputPath?: string) => Promise<string>
-  setRenderSettings: (patch: Partial<RenderSettings>) => Promise<void>
+  // Convenience wrappers
+  addHtmlLayer: (html: string, name?: string) => Promise<string>
+  addImageLayer: (srcPath: string, name?: string) => Promise<string>
+  addShapeLayer: (
+    shape: 'rect' | 'ellipse',
+    fillColor?: string,
+    name?: string,
+  ) => Promise<string>
+  addTextLayer: (text: string, name?: string) => Promise<string>
+  removeLayer: (id: string) => Promise<void>
+  duplicateLayer: (id: string) => Promise<string>
+  reorderLayer: (id: string, zIndex: number) => Promise<void>
+
+  setTransform: (id: string, patch: Partial<Transform2_5D>) => Promise<void>
+  setOpacity: (id: string, opacity: number) => Promise<void>
+  setSize: (id: string, w?: number, h?: number) => Promise<void>
+  setBorderRadius: (id: string, radius: number) => Promise<void>
+  setShadow: (id: string, shadow: Partial<BoxShadow>, index?: number) => Promise<void>
+  clearShadows: (id: string) => Promise<void>
+  setBlur: (id: string, radius: number) => Promise<void>
+  setVisible: (id: string, visible: boolean) => Promise<void>
+  renameLayer: (id: string, name: string) => Promise<void>
+
+  setKeyframe: (
+    id: string,
+    frame: number,
+    property: string,
+    value: unknown,
+    easing?: string,
+  ) => Promise<void>
+  removeKeyframe: (id: string, frame: number, property: string) => Promise<void>
+
+  setCanvas: (patch: Partial<Canvas>) => Promise<void>
+  setDuration: (frames: number) => Promise<void>
+
+  renderFrame: (frame?: number) => Promise<{ path: string; image_base64: string }>
+  renderAnimation: (outputPath?: string) => Promise<string>
 
   createProject: (name: string) => Promise<void>
+  openProject: (path: string) => Promise<void>
   saveProject: () => Promise<string>
 }
 
@@ -89,15 +138,24 @@ export const useSceneStore = create<State>()(
     scene: null,
     project: null,
     selectedId: null,
-    frame: 1,
+    frame: 0,
+    playing: false,
     isRendering: false,
-    previewUrl: null,
-    previewVersion: 0,
+
+    call: async <T,>(tool: string, args: Record<string, unknown> = {}) => {
+      return (await invoke<T>('call', { tool, args })) as T
+    },
 
     refresh: async () => {
       try {
-        const scene = await invoke<SceneData>('get_scene')
-        set((s) => { s.scene = scene })
+        const scene = await invoke<SceneData>('get_scene_cmd')
+        set((s) => {
+          s.scene = scene
+          // Clear selection if the layer's gone.
+          if (s.selectedId && !scene.layers.some((l) => l.id === s.selectedId)) {
+            s.selectedId = null
+          }
+        })
       } catch (e) {
         console.error('refresh', e)
       }
@@ -105,88 +163,155 @@ export const useSceneStore = create<State>()(
 
     refreshProject: async () => {
       try {
-        const project = await invoke<ProjectInfo | null>('get_project')
+        const project = await get().call<ProjectInfo | null>('get_project')
         set((s) => { s.project = project })
       } catch (e) {
         console.error('refreshProject', e)
       }
     },
 
-    select: (id) => set((s) => { s.selectedId = id }),
     setFrame: (f) => set((s) => { s.frame = f }),
+    select: (id) => set((s) => { s.selectedId = id }),
+    setPlaying: (p) => set((s) => { s.playing = p }),
 
-    addElement: async (kind, name, extra = {}) => {
-      const id = await invoke<string>('add_element', {
-        args: { kind, name, ...extra },
+    addHtmlLayer: async (html, name) => {
+      const r = await get().call<{ id: string }>('add_html_layer', { html, name })
+      await get().refresh()
+      set((s) => { s.selectedId = r.id })
+      return r.id
+    },
+    addImageLayer: async (src_path, name) => {
+      const r = await get().call<{ id: string }>('add_image_layer', { src_path, name })
+      await get().refresh()
+      set((s) => { s.selectedId = r.id })
+      return r.id
+    },
+    addShapeLayer: async (shape, fillColor = '#6644ff', name) => {
+      const r = await get().call<{ id: string }>('add_shape_layer', {
+        shape,
+        fill: { type: 'solid', color: fillColor },
+        name,
       })
       await get().refresh()
-      return id
+      set((s) => { s.selectedId = r.id })
+      return r.id
     },
-
-    updateElement: async (id, patch) => {
-      await invoke('update_element', { id, patch })
+    addTextLayer: async (text, name) => {
+      const r = await get().call<{ id: string }>('add_text_layer', { text, name })
+      await get().refresh()
+      set((s) => { s.selectedId = r.id })
+      return r.id
+    },
+    removeLayer: async (id) => {
+      await get().call('remove_layer', { id })
+      set((s) => { if (s.selectedId === id) s.selectedId = null })
+      await get().refresh()
+    },
+    duplicateLayer: async (id) => {
+      const r = await get().call<{ id: string }>('duplicate_layer', { id })
+      await get().refresh()
+      set((s) => { s.selectedId = r.id })
+      return r.id
+    },
+    reorderLayer: async (id, z_index) => {
+      await get().call('reorder_layer', { id, z_index })
       await get().refresh()
     },
 
-    removeElement: async (id) => {
-      await invoke('remove_element', { id })
-      set((s) => { if (s.selectedId === id) s.selectedId = null })
+    setTransform: async (id, patch) => {
+      await get().call('set_transform', { id, ...patch })
+      await get().refresh()
+    },
+    setOpacity: async (id, opacity) => {
+      await get().call('set_opacity', { id, opacity })
+      await get().refresh()
+    },
+    setSize: async (id, width, height) => {
+      await get().call('set_size', { id, width, height })
+      await get().refresh()
+    },
+    setBorderRadius: async (id, radius) => {
+      await get().call('set_border_radius', { id, radius })
+      await get().refresh()
+    },
+    setShadow: async (id, shadow, index) => {
+      await get().call('set_shadow', { id, ...shadow, index })
+      await get().refresh()
+    },
+    clearShadows: async (id) => {
+      await get().call('clear_shadows', { id })
+      await get().refresh()
+    },
+    setBlur: async (id, radius) => {
+      await get().call('set_blur', { id, radius })
+      await get().refresh()
+    },
+    setVisible: async (id, visible) => {
+      await get().call('set_visible', { id, visible })
+      await get().refresh()
+    },
+    renameLayer: async (id, name) => {
+      await get().call('rename_layer', { id, name })
       await get().refresh()
     },
 
     setKeyframe: async (id, frame, property, value, easing = 'ease-in-out') => {
-      await invoke('set_keyframe', { id, frame, property, value, easing })
+      await get().call('set_keyframe', { id, frame, property, value, easing })
+      await get().refresh()
+    },
+    removeKeyframe: async (id, frame, property) => {
+      await get().call('remove_keyframe', { id, frame, property })
       await get().refresh()
     },
 
-    renderPreview: async (frame) => {
-      const f = frame ?? get().frame
-      try {
-        const path = await invoke<string>('render_preview', { frame: f })
-        // bust cache with version query
-        set((s) => {
-          s.previewVersion += 1
-          s.previewUrl = `${convertFileSrc(path)}?v=${s.previewVersion}`
-        })
-      } catch (e) {
-        console.error('preview', e)
-      }
+    setCanvas: async (patch) => {
+      await get().call('set_canvas', patch as Record<string, unknown>)
+      await get().refresh()
+    },
+    setDuration: async (frames) => {
+      await get().call('set_duration', { frames })
+      await get().refresh()
     },
 
-    renderVideo: async (outputPath) => {
+    renderFrame: async (frame) => {
+      const f = frame ?? get().frame
+      return await get().call<{ path: string; image_base64: string }>(
+        'render_frame', { frame: f })
+    },
+    renderAnimation: async (outputPath) => {
       set((s) => { s.isRendering = true })
       try {
-        const out = await invoke<string>('render_video', { outputPath: outputPath ?? null })
-        return out
+        const r = await get().call<{ path: string }>('render_animation', {
+          output_path: outputPath,
+        })
+        return r.path
       } finally {
         set((s) => { s.isRendering = false })
       }
     },
 
-    setRenderSettings: async (patch) => {
-      await invoke('set_render_settings', patch)
-      await get().refresh()
-    },
-
     createProject: async (name) => {
-      const project = await invoke<ProjectInfo>('create_project', { name })
-      set((s) => { s.project = project })
+      const project = await get().call<ProjectInfo>('create_project', { name })
+      set((s) => { s.project = project; s.selectedId = null })
       await get().refresh()
     },
-
-    saveProject: async () => {
-      const path = await invoke<string>('save_project')
-      await get().refreshProject()
-      return path
+    openProject: async (path) => {
+      const project = await get().call<ProjectInfo>('open_project', { path })
+      set((s) => { s.project = project; s.selectedId = null })
+      await get().refresh()
     },
-  }))
+    saveProject: async () => {
+      const r = await get().call<{ path: string }>('save_project')
+      await get().refreshProject()
+      return r.path
+    },
+  })),
 )
 
-// Tauri asset URL converter (lazy import to avoid SSR issues)
-function convertFileSrc(path: string): string {
-  // @ts-ignore - available in Tauri runtime
-  if (typeof window !== 'undefined' && (window as any).__TAURI__?.core?.convertFileSrc) {
-    return (window as any).__TAURI__.core.convertFileSrc(path)
-  }
-  return `file://${path}`
+// Helper for components: get the selected layer (or null).
+export function useSelectedLayer(): Layer | null {
+  const scene = useSceneStore((s) => s.scene)
+  const id = useSceneStore((s) => s.selectedId)
+  if (!scene || !id) return null
+  return scene.layers.find((l) => l.id === id) || null
 }

@@ -1,6 +1,18 @@
-# Juicer — Blender fork
+# Juicer — Blender fork (reference only, not built)
 
-This is the **Pro render path**: a fork of Blender that ingests a Juicer
+> **Status (Juicer v0.2 pivot):** This fork is kept in-repo as a **read-only
+> reference codebase**. We study Blender's source for production-tool UX
+> patterns — gizmos, viewport navigation, F-curve graph editor, action editor,
+> the dependency-graph model — and mirror those ideas in Juicer's own
+> WebKit-based renderer. The fork is **NOT compiled** and **NOT shipped**.
+>
+> The Tauri/WebKit pipeline (`apps/desktop/src-tauri/src/renderer.rs` +
+> `juicer-frame-renderer`) is the canonical render path now. There is no
+> `--juicer` Blender invocation in the app.
+
+---
+
+This was the **Pro render path** (now dormant): a fork of Blender that ingests a Juicer
 `scene.json` **natively in C++** and renders it with Blender's real keyframe
 (F-curve) engine and Cycles/Eevee. **No Python / bpy** — a new CLI flag drives
 Blender's own compiled subsystems directly.

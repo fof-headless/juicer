@@ -1,6 +1,6 @@
 {
   "productName": "Juicer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "studio.juicer.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -30,8 +30,15 @@
     "targets": "dmg",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
     "category": "Graphics and Design",
-    "shortDescription": "Product demo animation studio",
-    "resources": ["bin/juicer-html-capture", "bin/juicer-encoder", "resources/tailwind.js"],
+    "shortDescription": "Figma-flat motion-design studio for product demos",
+    "resources": [
+      "bin/juicer-html-capture",
+      "bin/juicer-frame-renderer",
+      "bin/juicer-encoder",
+      "resources/tailwind.js",
+      "resources/renderer.html",
+      "resources/runtime.js"
+    ],
     "macOS": {
       "minimumSystemVersion": "13.0",
       "entitlements": null

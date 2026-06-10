@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Build the native macOS helper binaries (HTML capture + video encoder).
+# Build the native macOS helper binaries:
+#   - juicer-html-capture:   one-shot HTML → transparent PNG (for capture_html tool)
+#   - juicer-frame-renderer: long-lived offscreen renderer for per-frame snapshots
+#   - juicer-encoder:        PNG sequence → MP4 via AVFoundation (no ffmpeg)
 # Requires Xcode CLI tools only (swiftc) — NOT the full Xcode app.
 set -euo pipefail
 
@@ -11,6 +14,12 @@ echo "→ Building juicer-html-capture…"
 swiftc "$HERE/html-capture/main.swift" \
     -O \
     -o "$BIN_DIR/juicer-html-capture" \
+    -framework WebKit -framework AppKit
+
+echo "→ Building juicer-frame-renderer…"
+swiftc "$HERE/frame-renderer/main.swift" \
+    -O \
+    -o "$BIN_DIR/juicer-frame-renderer" \
     -framework WebKit -framework AppKit
 
 echo "→ Building juicer-encoder…"

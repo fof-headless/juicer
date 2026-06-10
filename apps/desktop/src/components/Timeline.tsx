@@ -1,110 +1,192 @@
 import { useMemo, useRef } from 'react'
-import { useSceneStore } from '../store/scene'
+import { useSceneStore, useSelectedLayer } from '../store/scene'
 
-/// A Blender-style timeline strip: frame ruler, draggable playhead, and
-/// keyframe dots for the selected element's tracks. Scrubbing seeks + previews.
+/// Horizontal timeline strip: frame ruler, draggable playhead, and per-track
+/// keyframe dots for the selected layer. Scrubbing seeks the preview.
 export function Timeline() {
   const scene = useSceneStore((s) => s.scene)
   const frame = useSceneStore((s) => s.frame)
   const setFrame = useSceneStore((s) => s.setFrame)
-  const renderPreview = useSceneStore((s) => s.renderPreview)
-  const selectedId = useSceneStore((s) => s.selectedId)
+  const layer = useSelectedLayer()
   const trackRef = useRef<HTMLDivElement>(null)
 
-  const start = scene?.render.frame_start ?? 1
-  const end = Math.max(scene?.render.frame_end ?? 300, start + 1)
-  const span = end - start
+  const duration = scene?.duration_frames ?? 1
+  const fps = scene?.canvas.fps ?? 30
+  const tickEveryN = useMemo(() => {
+    // Aim for ~10 labels across.
+    const target = Math.max(1, Math.round(duration / 10))
+    return target
+  }, [duration])
 
-  const selected = scene?.elements.find((e) => e.id === selectedId || e.name === selectedId)
+  const xForFrame = (f: number) => (f / Math.max(1, duration - 1)) * 100
 
-  // Collect keyframes per property for the selected element.
-  const keyframes = useMemo(() => {
-    if (!selected) return [] as { frame: number; property: string }[]
-    const out: { frame: number; property: string }[] = []
-    for (const t of selected.tracks ?? []) {
-      for (const k of t.track?.keys ?? []) out.push({ frame: k.frame, property: t.property })
-    }
-    return out
-  }, [selected])
-
-  const pct = (f: number) => ((f - start) / span) * 100
-
-  const seekFromClientX = (clientX: number) => {
+  const onScrub = (e: React.MouseEvent | React.PointerEvent) => {
     const el = trackRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
-    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
-    const f = Math.round(start + ratio * span)
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    const f = Math.round(ratio * (duration - 1))
     setFrame(f)
-    renderPreview(f)
   }
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
-    seekFromClientX(e.clientX)
-  }
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (e.buttons !== 1) return
-    seekFromClientX(e.clientX)
-  }
-
-  // Ruler ticks every ~10% of the span.
-  const ticks = useMemo(() => {
-    const n = 10
-    return Array.from({ length: n + 1 }, (_, i) => start + Math.round((span * i) / n))
-  }, [start, span])
 
   return (
-    <div style={s.wrap}>
-      <div style={s.head}>
-        <span style={s.label}>Timeline</span>
-        <span style={s.range}>{start}–{end}</span>
-        {selected && <span style={s.sel}>● {selected.name}</span>}
-        <span style={s.frameTag}>frame {frame}</span>
+    <div style={styles.root}>
+      <div style={styles.header}>
+        <span>TIMELINE</span>
+        <span style={{ marginLeft: 'auto' }}>
+          {frame} / {duration} • {(frame / fps).toFixed(2)}s
+        </span>
       </div>
 
       <div
         ref={trackRef}
-        style={s.track}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
+        style={styles.track}
+        onPointerDown={(e) => {
+          (e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+          onScrub(e)
+        }}
+        onPointerMove={(e) => {
+          if (e.buttons === 1) onScrub(e)
+        }}
       >
-        {/* ruler ticks */}
-        {ticks.map((t, i) => (
-          <div key={i} style={{ ...s.tick, left: `${pct(t)}%` }}>
-            <span style={s.tickLabel}>{t}</span>
-          </div>
-        ))}
+        {/* Ruler ticks */}
+        {Array.from({ length: Math.ceil(duration / tickEveryN) + 1 }).map((_, i) => {
+          const f = i * tickEveryN
+          if (f > duration) return null
+          return (
+            <div key={i} style={{ ...styles.tick, left: `${xForFrame(f)}%` }}>
+              <div style={styles.tickMark} />
+              <div style={styles.tickLabel}>{f}</div>
+            </div>
+          )
+        })}
 
-        {/* keyframe dots */}
-        {keyframes.map((k, i) => (
-          <div
-            key={i}
-            title={`${k.property} @ ${k.frame}`}
-            style={{ ...s.key, left: `${pct(k.frame)}%` }}
-          />
-        ))}
+        {/* Keyframe markers for selected layer */}
+        {layer &&
+          layer.tracks.flatMap((nt) =>
+            nt.track.keys.map((k, i) => (
+              <div
+                key={`${nt.property}-${i}`}
+                title={`${nt.property} @ frame ${k.frame}`}
+                style={{
+                  ...styles.kfDot,
+                  left: `${xForFrame(k.frame)}%`,
+                  background: keyframeColor(nt.property),
+                }}
+              />
+            )),
+          )}
 
-        {/* playhead */}
-        <div style={{ ...s.playhead, left: `${pct(frame)}%` }}>
-          <div style={s.playheadKnob} />
-        </div>
+        {/* Playhead */}
+        <div style={{ ...styles.playhead, left: `${xForFrame(frame)}%` }} />
       </div>
+
+      {layer && layer.tracks.length > 0 && (
+        <div style={styles.tracksList}>
+          {layer.tracks.map((nt) => (
+            <div key={nt.property} style={styles.trackRow}>
+              <span style={styles.trackLabel}>{nt.property}</span>
+              <span style={{ ...styles.kfDot, position: 'relative', background: keyframeColor(nt.property), marginRight: 8 }} />
+              <span style={styles.trackCount}>{nt.track.keys.length} kf</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
-const s: Record<string, React.CSSProperties> = {
-  wrap: { display: 'flex', flexDirection: 'column', height: '100%', background: '#0c0c12', borderTop: '1px solid #1a1a22' },
-  head: { display: 'flex', alignItems: 'center', gap: 12, padding: '5px 12px', borderBottom: '1px solid #15151d' },
-  label: { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#555570' },
-  range: { fontSize: 10, color: '#333348', fontFamily: 'monospace' },
-  sel: { fontSize: 11, color: '#9977ff', fontWeight: 600 },
-  frameTag: { marginLeft: 'auto', fontSize: 11, color: '#7777aa', fontFamily: 'monospace' },
-  track: { position: 'relative', flex: 1, margin: '10px 12px 14px', background: '#111119', borderRadius: 6, border: '1px solid #1a1a24', cursor: 'pointer', minHeight: 44 },
-  tick: { position: 'absolute', top: 0, bottom: 0, width: 1, background: '#1a1a26' },
-  tickLabel: { position: 'absolute', top: 2, left: 3, fontSize: 9, color: '#33334a', fontFamily: 'monospace' },
-  key: { position: 'absolute', bottom: 8, width: 9, height: 9, marginLeft: -4.5, background: '#ffaa33', borderRadius: 2, transform: 'rotate(45deg)', border: '1px solid #cc7711', boxShadow: '0 0 4px rgba(255,170,51,0.5)' },
-  playhead: { position: 'absolute', top: 0, bottom: 0, width: 2, marginLeft: -1, background: '#cc3355', pointerEvents: 'none' },
-  playheadKnob: { position: 'absolute', top: -1, left: -4, width: 10, height: 10, background: '#cc3355', borderRadius: '50%' },
+function keyframeColor(property: string): string {
+  // Stable color per property name.
+  let h = 0
+  for (let i = 0; i < property.length; i++) h = (h * 31 + property.charCodeAt(i)) >>> 0
+  return `hsl(${h % 360} 70% 55%)`
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  root: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+    background: '#15151c',
+    borderTop: '1px solid #2a2a36',
+    overflow: 'hidden',
+    fontSize: 11,
+    color: '#cfcfdc',
+  },
+  header: {
+    padding: '6px 12px',
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: 1,
+    color: '#888',
+    borderBottom: '1px solid #2a2a36',
+    display: 'flex',
+    alignItems: 'center',
+  },
+  track: {
+    position: 'relative',
+    height: 38,
+    background: '#181820',
+    margin: '6px 12px',
+    borderRadius: 3,
+    overflow: 'hidden',
+    cursor: 'pointer',
+    userSelect: 'none',
+  },
+  tick: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    transform: 'translateX(-0.5px)',
+  },
+  tickMark: {
+    width: 1,
+    height: 4,
+    background: '#3a3a4a',
+  },
+  tickLabel: {
+    fontSize: 9,
+    color: '#666',
+    marginTop: 2,
+    transform: 'translateX(-50%)',
+  },
+  kfDot: {
+    position: 'absolute',
+    top: '50%',
+    width: 8,
+    height: 8,
+    marginLeft: -4,
+    marginTop: -4,
+    borderRadius: 2,
+    transform: 'rotate(45deg)',
+    boxShadow: '0 0 0 1px #15151c',
+  },
+  playhead: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 1,
+    background: '#ffaa66',
+    boxShadow: '0 0 4px rgba(255,170,102,0.6)',
+    pointerEvents: 'none',
+  },
+  tracksList: {
+    overflowY: 'auto',
+    padding: '0 12px 8px',
+  },
+  trackRow: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '4px 6px',
+    fontSize: 11,
+    color: '#aaa',
+  },
+  trackLabel: {
+    flex: 1,
+  },
+  trackCount: {
+    fontSize: 10,
+    color: '#666',
+  },
 }

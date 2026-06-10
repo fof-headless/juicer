@@ -1,172 +1,329 @@
-import { useState } from 'react'
-import { useSceneStore } from '../store/scene'
+import { useSceneStore, useSelectedLayer } from '../store/scene'
 
 export function Properties() {
-  const scene = useSceneStore((s) => s.scene)
-  const selectedId = useSceneStore((s) => s.selectedId)
+  const layer = useSelectedLayer()
   const frame = useSceneStore((s) => s.frame)
-  const updateElement = useSceneStore((s) => s.updateElement)
+  const setTransform = useSceneStore((s) => s.setTransform)
+  const setOpacity = useSceneStore((s) => s.setOpacity)
+  const setSize = useSceneStore((s) => s.setSize)
+  const setBorderRadius = useSceneStore((s) => s.setBorderRadius)
+  const setShadow = useSceneStore((s) => s.setShadow)
+  const clearShadows = useSceneStore((s) => s.clearShadows)
+  const setBlur = useSceneStore((s) => s.setBlur)
   const setKeyframe = useSceneStore((s) => s.setKeyframe)
+  const renameLayer = useSceneStore((s) => s.renameLayer)
 
-  const [kfProp, setKfProp] = useState<'position' | 'rotation' | 'scale' | 'opacity'>('position')
-  const [easing, setEasing] = useState('ease-in-out')
-
-  const el = scene?.elements.find((e) => e.id === selectedId)
-
-  if (!el) {
+  if (!layer) {
     return (
-      <div style={{ ...s.panel, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 20 }}>
-        <div style={{ fontSize: 22, opacity: 0.3 }}>☰</div>
-        <div style={{ color: '#444460', textAlign: 'center', fontSize: 11, lineHeight: 1.7 }}>
-          Click an element in the<br />Scene list to edit its<br />properties and keyframes.
-        </div>
+      <div style={styles.empty}>
+        Select a layer to edit its transform, fill, shadow, and effects.
       </div>
     )
   }
 
-  const insertKeyframe = () => {
-    let value: unknown
-    if (kfProp === 'position') value = el.position
-    else if (kfProp === 'rotation') value = el.rotation
-    else if (kfProp === 'scale') value = el.scale
-    else value = el.opacity
-    setKeyframe(el.id, frame, kfProp, value, easing)
-  }
+  const t = layer.transform
+  const shadow = layer.effects.shadows[0]
 
   return (
-    <div style={s.panel}>
-      <div style={s.header}>Properties — {el.name}</div>
-
-      <Section title="Name">
-        <input style={s.input} value={el.name} onChange={(e) => updateElement(el.id, { name: e.target.value })} />
-      </Section>
+    <div style={styles.root}>
+      <div style={styles.header}>
+        <input
+          style={styles.nameInput}
+          value={layer.name}
+          onChange={(e) => renameLayer(layer.id, e.target.value)}
+        />
+        <span style={styles.id}>{layer.id}</span>
+      </div>
 
       <Section title="Transform">
-        <Vec3 label="Loc" value={el.position} onChange={(v) => updateElement(el.id, { position: v })} step={0.1} />
-        <Vec3 label="Rot" value={el.rotation} onChange={(v) => updateElement(el.id, { rotation: v })} step={0.05} />
-        <Vec3 label="Scl" value={el.scale} onChange={(v) => updateElement(el.id, { scale: v })} step={0.1} />
+        <Row>
+          <Num label="X" value={t.x} onChange={(v) => setTransform(layer.id, { x: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'x', t.x)} />
+          <Num label="Y" value={t.y} onChange={(v) => setTransform(layer.id, { y: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'y', t.y)} />
+        </Row>
+        <Row>
+          <Num label="W" value={layer.width} onChange={(v) => setSize(layer.id, v)}
+               onKey={() => setKeyframe(layer.id, frame, 'width', layer.width)} />
+          <Num label="H" value={layer.height} onChange={(v) => setSize(layer.id, undefined, v)}
+               onKey={() => setKeyframe(layer.id, frame, 'height', layer.height)} />
+        </Row>
+        <Row>
+          <Num label="Rot°" value={t.rotation} onChange={(v) => setTransform(layer.id, { rotation: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'rotation', t.rotation)} />
+          <Num label="Scale X" value={t.scale_x} onChange={(v) => setTransform(layer.id, { scale_x: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'scale_x', t.scale_x)} step={0.1} />
+          <Num label="Scale Y" value={t.scale_y} onChange={(v) => setTransform(layer.id, { scale_y: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'scale_y', t.scale_y)} step={0.1} />
+        </Row>
+      </Section>
+
+      <Section title="2.5D">
+        <Row>
+          <Num label="Rot X°" value={t.rotate_x} onChange={(v) => setTransform(layer.id, { rotate_x: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'rotate_x', t.rotate_x)} />
+          <Num label="Rot Y°" value={t.rotate_y} onChange={(v) => setTransform(layer.id, { rotate_y: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'rotate_y', t.rotate_y)} />
+          <Num label="Persp" value={t.perspective} onChange={(v) => setTransform(layer.id, { perspective: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'perspective', t.perspective)} />
+        </Row>
       </Section>
 
       <Section title="Appearance">
-        <Row label="Color">
-          <input type="color" style={s.color} value={el.color} onChange={(e) => updateElement(el.id, { color: e.target.value })} />
+        <Row>
+          <Num label="Opacity" value={layer.opacity} min={0} max={1} step={0.05}
+               onChange={(v) => setOpacity(layer.id, v)}
+               onKey={() => setKeyframe(layer.id, frame, 'opacity', layer.opacity)} />
+          <Num label="Radius" value={((layer.kind as any).border_radius as number | undefined) ?? 0}
+               onChange={(v) => setBorderRadius(layer.id, v)}
+               onKey={() => setKeyframe(layer.id, frame, 'border_radius',
+                 ((layer.kind as any).border_radius as number | undefined) ?? 0)} />
         </Row>
-        <Row label="Opacity">
-          <input type="range" min={0} max={1} step={0.01} value={el.opacity} onChange={(e) => updateElement(el.id, { opacity: parseFloat(e.target.value) })} style={{ flex: 1, accentColor: '#6644ff' }} />
-          <span style={s.val}>{(el.opacity * 100).toFixed(0)}%</span>
-        </Row>
-        {el.kind === 'plane' && (
-          <>
-            <Row label="Width"><Num value={el.width} onChange={(v) => updateElement(el.id, { width: v })} /></Row>
-            <Row label="Height"><Num value={el.height} onChange={(v) => updateElement(el.id, { height: v })} /></Row>
-            <Row label="Unlit">
-              <input type="checkbox" checked={el.unlit} onChange={(e) => updateElement(el.id, { unlit: e.target.checked })} />
-            </Row>
-          </>
-        )}
       </Section>
 
-      <Section title="Keyframe at Frame">
-        <Row label="Frame"><span style={{ ...s.val, color: '#6644ff', fontWeight: 700 }}>f{frame}</span><span style={{ fontSize: 10, color: '#333344', marginLeft: 4 }}>← drag timeline below</span></Row>
-        <Row label="Property">
-          <select style={s.select} value={kfProp} onChange={(e) => setKfProp(e.target.value as any)}>
-            <option value="position">Position</option>
-            <option value="rotation">Rotation</option>
-            <option value="scale">Scale</option>
-            <option value="opacity">Opacity</option>
-          </select>
+      <Section title="Shadow">
+        <Row>
+          <Num label="Offset X" value={shadow?.offset_x ?? 0}
+               onChange={(v) => setShadow(layer.id, { ...defaultShadow(shadow), offset_x: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'shadow_offset_x', shadow?.offset_x ?? 0)} />
+          <Num label="Offset Y" value={shadow?.offset_y ?? 8}
+               onChange={(v) => setShadow(layer.id, { ...defaultShadow(shadow), offset_y: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'shadow_offset_y', shadow?.offset_y ?? 8)} />
         </Row>
-        <Row label="Easing">
-          <select style={s.select} value={easing} onChange={(e) => setEasing(e.target.value)}>
-            <option value="linear">Linear</option>
-            <option value="ease-in">Ease In</option>
-            <option value="ease-out">Ease Out</option>
-            <option value="ease-in-out">Ease In-Out</option>
-            <option value="step">Step</option>
-          </select>
+        <Row>
+          <Num label="Blur" value={shadow?.blur ?? 32}
+               onChange={(v) => setShadow(layer.id, { ...defaultShadow(shadow), blur: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'shadow_blur', shadow?.blur ?? 32)} />
+          <Num label="Spread" value={shadow?.spread ?? 0}
+               onChange={(v) => setShadow(layer.id, { ...defaultShadow(shadow), spread: v })}
+               onKey={() => setKeyframe(layer.id, frame, 'shadow_spread', shadow?.spread ?? 0)} />
         </Row>
-        <div style={{ padding: '6px 8px' }}>
-          <button style={s.kfBtn} onClick={insertKeyframe}>◆ Insert Keyframe @ {frame}</button>
-        </div>
+        <Row>
+          <ColorInput label="Color" value={shadow?.color ?? 'rgba(0,0,0,0.35)'}
+                     onChange={(v) => setShadow(layer.id, { ...defaultShadow(shadow), color: v })} />
+          <button style={styles.btn} onClick={() => clearShadows(layer.id)}>Clear</button>
+        </Row>
       </Section>
 
-      <Section title="Keyframes">
-        <div style={{ maxHeight: 130, overflowY: 'auto' }}>
-          {el.tracks.length === 0 && <div style={{ padding: '8px 12px', color: '#333344', fontSize: 11 }}>None yet</div>}
-          {el.tracks.flatMap((nt) =>
-            nt.track.keys.map((k, i) => (
-              <div key={`${nt.property}-${i}`} style={s.kfRow}>
-                <span style={s.kfFrame}>{Math.round(k.frame)}</span>
-                <span style={s.kfProp}>{nt.property}</span>
-                <span style={s.kfEase}>{k.easing}</span>
-              </div>
-            ))
-          )}
-        </div>
+      <Section title="Filter">
+        <Row>
+          <Num label="Blur (px)" value={layer.effects.filter_blur}
+               onChange={(v) => setBlur(layer.id, v)}
+               onKey={() => setKeyframe(layer.id, frame, 'filter_blur', layer.effects.filter_blur)} />
+        </Row>
       </Section>
     </div>
   )
+}
+
+function defaultShadow(s?: { offset_x: number; offset_y: number; blur: number; spread: number; color: string }) {
+  return {
+    offset_x: s?.offset_x ?? 0,
+    offset_y: s?.offset_y ?? 8,
+    blur: s?.blur ?? 32,
+    spread: s?.spread ?? 0,
+    color: s?.color ?? 'rgba(0,0,0,0.35)',
+  }
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ borderBottom: '1px solid #1a1a22' }}>
-      <div style={s.sectionTitle}>{title}</div>
-      {children}
+    <div style={styles.section}>
+      <div style={styles.sectionTitle}>{title}</div>
+      <div style={styles.sectionBody}>{children}</div>
     </div>
   )
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({ children }: { children: React.ReactNode }) {
+  return <div style={styles.row}>{children}</div>
+}
+
+function Num({
+  label,
+  value,
+  onChange,
+  onKey,
+  min,
+  max,
+  step = 1,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+  onKey?: () => void
+  min?: number
+  max?: number
+  step?: number
+}) {
   return (
-    <div style={s.row}>
-      <span style={s.label}>{label}</span>
-      <div style={s.control}>{children}</div>
-    </div>
+    <label style={styles.field}>
+      <span style={styles.fieldLabel}>{label}</span>
+      <input
+        type="number"
+        style={styles.input}
+        value={value ?? 0}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value)
+          if (!Number.isNaN(v)) onChange(v)
+        }}
+      />
+      {onKey && (
+        <button title="Insert keyframe at current frame" style={styles.keyBtn} onClick={onKey}>
+          ⬥
+        </button>
+      )}
+    </label>
   )
 }
 
-function Vec3({ label, value, onChange, step }: { label: string; value: [number, number, number]; onChange: (v: [number, number, number]) => void; step: number }) {
+function ColorInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  // Try to coerce rgba()/hex into a #rrggbb for the color picker.
+  const hex = toHex(value)
   return (
-    <div style={{ padding: '2px 8px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-        <span style={{ ...s.label, width: 28 }}>{label}</span>
-        {(['x', 'y', 'z'] as const).map((axis, i) => (
-          <div key={axis} style={s.vecField}>
-            <span style={{ ...s.axis, ...(i === 0 ? s.ax : i === 1 ? s.ay : s.az) }}>{axis.toUpperCase()}</span>
-            <input type="number" step={step} style={s.numInput} value={value[i].toFixed(3)}
-              onChange={(e) => { const n = [...value] as [number, number, number]; n[i] = parseFloat(e.target.value) || 0; onChange(n) }} />
-          </div>
-        ))}
-      </div>
-    </div>
+    <label style={styles.field}>
+      <span style={styles.fieldLabel}>{label}</span>
+      <input
+        type="color"
+        style={styles.colorInput}
+        value={hex}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
   )
 }
 
-function Num({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return <input type="number" step={0.1} style={{ ...s.numInput, background: '#1a1a22', border: '1px solid #222232', borderRadius: 4, width: '100%' }} value={value.toFixed(2)} onChange={(e) => onChange(parseFloat(e.target.value) || 0)} />
+function toHex(v: string): string {
+  if (v.startsWith('#') && v.length >= 7) return v.slice(0, 7)
+  // Strip rgba(...) → #rrggbb, ignore alpha.
+  const m = v.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/)
+  if (m) {
+    const [r, g, b] = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])]
+    return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')
+  }
+  return '#000000'
 }
 
-const s: Record<string, React.CSSProperties> = {
-  panel: { display: 'flex', flexDirection: 'column', height: '100%', background: '#111116', color: '#c8c8d4', fontSize: 12, fontFamily: "'Inter', sans-serif", overflowY: 'auto' },
-  header: { padding: '7px 12px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#555570', background: '#0f0f14', borderBottom: '1px solid #1a1a22', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-  sectionTitle: { padding: '5px 12px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#5533bb' },
-  row: { display: 'flex', alignItems: 'center', padding: '3px 8px', gap: 8 },
-  label: { color: '#555570', width: 50, flexShrink: 0, fontSize: 11 },
-  control: { flex: 1, display: 'flex', alignItems: 'center', gap: 6 },
-  val: { color: '#8888aa', fontFamily: 'monospace', fontSize: 11 },
-  input: { background: '#1a1a22', border: '1px solid #222232', borderRadius: 4, color: '#c8c8d4', padding: '5px 8px', fontSize: 12, outline: 'none', width: 'calc(100% - 16px)', margin: '2px 8px' },
-  select: { background: '#1a1a22', border: '1px solid #222232', borderRadius: 4, color: '#c8c8d4', padding: '3px 6px', fontSize: 11, outline: 'none', width: '100%' },
-  color: { width: 32, height: 22, border: 'none', background: 'none', cursor: 'pointer' },
-  kfBtn: { width: '100%', padding: '7px 0', background: '#5533bb', border: 'none', borderRadius: 5, color: 'white', fontSize: 11, fontWeight: 600, cursor: 'pointer' },
-  kfRow: { display: 'flex', alignItems: 'center', padding: '2px 12px', gap: 8, borderBottom: '1px solid #16161e' },
-  kfFrame: { color: '#6644ff', fontFamily: 'monospace', fontSize: 10, minWidth: 28 },
-  kfProp: { flex: 1, color: '#888899', fontSize: 10 },
-  kfEase: { color: '#444460', fontSize: 9 },
-  vecField: { display: 'flex', flex: 1, alignItems: 'center', background: '#1a1a22', border: '1px solid #222232', borderRadius: 4, overflow: 'hidden' },
-  axis: { padding: '2px 4px', fontSize: 9, fontWeight: 700, flexShrink: 0 },
-  ax: { color: '#ff4455', background: 'rgba(255,68,85,0.12)' },
-  ay: { color: '#44ff88', background: 'rgba(68,255,136,0.12)' },
-  az: { color: '#4488ff', background: 'rgba(68,136,255,0.12)' },
-  numInput: { background: 'transparent', border: 'none', color: '#c8c8d4', padding: '2px 4px', fontSize: 10, width: '100%', textAlign: 'right', outline: 'none', fontFamily: 'monospace' },
+const styles: Record<string, React.CSSProperties> = {
+  root: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+    background: '#15151c',
+    borderLeft: '1px solid #2a2a36',
+    overflowY: 'auto',
+    color: '#cfcfdc',
+    fontSize: 12,
+  },
+  empty: {
+    padding: 16,
+    color: '#666',
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  header: {
+    padding: 12,
+    borderBottom: '1px solid #2a2a36',
+    background: '#1a1a22',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  nameInput: {
+    background: 'transparent',
+    border: 0,
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 500,
+    outline: 'none',
+    padding: 0,
+  },
+  id: {
+    fontSize: 10,
+    color: '#666',
+    fontFamily: 'monospace',
+  },
+  section: {
+    borderBottom: '1px solid #1c1c25',
+  },
+  sectionTitle: {
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: 1,
+    color: '#888',
+    padding: '8px 12px 4px',
+  },
+  sectionBody: {
+    padding: '0 12px 10px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  row: {
+    display: 'flex',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  field: {
+    flex: 1,
+    minWidth: 70,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+  },
+  fieldLabel: {
+    fontSize: 10,
+    color: '#888',
+    minWidth: 50,
+  },
+  input: {
+    flex: 1,
+    minWidth: 0,
+    background: '#1f1f29',
+    border: '1px solid #2a2a36',
+    color: '#fff',
+    padding: '3px 5px',
+    borderRadius: 3,
+    fontSize: 11,
+    outline: 'none',
+  },
+  colorInput: {
+    flex: 1,
+    minWidth: 0,
+    height: 22,
+    background: '#1f1f29',
+    border: '1px solid #2a2a36',
+    borderRadius: 3,
+    padding: 0,
+    cursor: 'pointer',
+  },
+  keyBtn: {
+    background: '#2a2a36',
+    border: 0,
+    color: '#ffaa66',
+    padding: '2px 4px',
+    borderRadius: 2,
+    cursor: 'pointer',
+    fontSize: 10,
+  },
+  btn: {
+    background: '#1f1f29',
+    border: '1px solid #2a2a36',
+    color: '#cfcfdc',
+    padding: '3px 8px',
+    borderRadius: 3,
+    cursor: 'pointer',
+    fontSize: 11,
+  },
 }

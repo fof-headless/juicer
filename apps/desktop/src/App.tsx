@@ -10,53 +10,35 @@ import { useSceneStore } from './store/scene'
 
 export function App() {
   const refresh = useSceneStore((s) => s.refresh)
-  const scene = useSceneStore((s) => s.scene)
-  const frame = useSceneStore((s) => s.frame)
-  const renderPreview = useSceneStore((s) => s.renderPreview)
+  const refreshProject = useSceneStore((s) => s.refreshProject)
 
   useEffect(() => {
     refresh()
-  }, [refresh])
-
-  // Live preview: re-render shortly after any scene edit or frame change, so
-  // the viewport reflects edits without manually clicking. Skipped during
-  // playback (the Toolbar loop drives its own frames).
-  useEffect(() => {
-    if (!scene || scene.elements.length === 0) return
-    const t = setTimeout(() => {
-      if (!(useSceneStore.getState() as any).__playing) renderPreview(frame)
-    }, 140)
-    return () => clearTimeout(t)
-  }, [scene, frame, renderPreview])
+    refreshProject()
+  }, [refresh, refreshProject])
 
   return (
     <div style={app.root}>
       <Toolbar />
       <div style={app.body}>
         <PanelGroup direction="vertical">
-          <Panel defaultSize={74} minSize={40}>
+          <Panel defaultSize={72} minSize={40}>
             <PanelGroup direction="horizontal">
-              <Panel defaultSize={20} minSize={14} maxSize={30}>
+              <Panel defaultSize={20} minSize={14} maxSize={32}>
                 <PanelGroup direction="vertical">
                   <Panel defaultSize={50} minSize={20}><Sidebar /></Panel>
                   <PanelResizeHandle style={handle.h} />
                   <Panel defaultSize={50} minSize={20}><HtmlImporter /></Panel>
                 </PanelGroup>
               </Panel>
-
               <PanelResizeHandle style={handle.v} />
-
-              <Panel defaultSize={58} minSize={30}><Viewport /></Panel>
-
+              <Panel defaultSize={56} minSize={30}><Viewport /></Panel>
               <PanelResizeHandle style={handle.v} />
-
-              <Panel defaultSize={22} minSize={14} maxSize={32}><Properties /></Panel>
+              <Panel defaultSize={24} minSize={16} maxSize={36}><Properties /></Panel>
             </PanelGroup>
           </Panel>
-
           <PanelResizeHandle style={handle.h} />
-
-          <Panel defaultSize={26} minSize={12} maxSize={45}><Timeline /></Panel>
+          <Panel defaultSize={28} minSize={14} maxSize={45}><Timeline /></Panel>
         </PanelGroup>
       </div>
     </div>
@@ -64,7 +46,17 @@ export function App() {
 }
 
 const app: Record<string, React.CSSProperties> = {
-  root: { display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden', background: '#0d0d12' },
+  root: {
+    display: 'flex',
+    flexDirection: 'column',
+    width: '100vw',
+    height: '100vh',
+    overflow: 'hidden',
+    background: '#0d0d12',
+    color: '#cfcfdc',
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif',
+  },
   body: { flex: 1, minHeight: 0, overflow: 'hidden' },
 }
 

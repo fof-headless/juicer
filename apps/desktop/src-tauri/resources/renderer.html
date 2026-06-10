@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Juicer renderer</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    /* Background is set from scene.canvas.background by the runtime. */
+    background: transparent;
+    /* Keep crispness for shadows / borders that fall on subpixel boundaries. */
+    image-rendering: -webkit-optimize-contrast;
+  }
+  /* The single absolute-positioned stage that holds all layers. */
+  #stage {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    transform-style: preserve-3d;
+  }
+  /* Every layer absolute-positions inside #stage; its `transform` does all motion. */
+  .juicer-layer {
+    position: absolute;
+    left: 0;
+    top: 0;
+    will-change: transform, opacity, filter;
+    backface-visibility: hidden;
+  }
+  /* HTML layers wrap their iframe so the iframe fills the layer box. */
+  .juicer-layer > iframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: transparent;
+    display: block;
+  }
+  /* Image layers wrap their <img>. */
+  .juicer-layer > img.juicer-img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+  }
+  /* Text layer styling is set inline per-layer from the resolved state. */
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="runtime.js"></script>
+</body>
+</html>

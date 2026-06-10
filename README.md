@@ -1,62 +1,71 @@
 # Juicer ⚡
 
-**A free, self-contained native Mac app for product-demo animations.** Bring your HTML/React components and brand visuals into a 3D scene, keyframe them like in Blender, and render to MP4 — driven by you or by Claude over MCP.
+**Native macOS app for Figma-style flat-with-shadows motion design — product launch / product demo videos — driven by Claude over MCP.**
 
-No Blender. No Python. No browser engine doing the rendering. One `.app`.
+Paste HTML / a screenshot / a design-system mockup into Claude, Claude builds the animated scene atomically over MCP, Claude takes preview screenshots and iterates, you export an MP4. No Blender. No browser-engine-driven renderer to wrestle with. One `.app`.
 
 ---
 
-## What changed (and why)
+## What this is
 
-Earlier drafts leaned on Blender (heavy external dependency, GPLv3, a Python socket bridge) or on a browser/WebGL stack (heavy node_modules, not native). Both were wrong for this.
+A 2.5D layer compositor with a Blender-grade keyframe engine. The key idea: **the browser is the renderer**. CSS already does shadows, blurs, gradients, border-radius, transforms (including 3D perspective), text rendering, and z-order compositing better than anything we'd write from scratch — so we piggyback on it. One offscreen WKWebView, layers as DOM siblings, HTML layers isolated via `<iframe srcdoc>` so user CSS cannot leak between layers.
 
-Juicer now has its **own native rendering engine** written in Rust with `wgpu` (→ Metal on macOS). For the actual use case — HTML/image panels and shapes moving through 3D space with keyframes and camera moves — you don't need Blender's renderer at all. You need a lean, fast, self-contained engine. That's what this is.
+| Layer type | What it is |
+|---|---|
+| **HTML** | Your component's HTML/Tailwind, rendered in an isolated iframe |
+| **Image** | PNG/JPG/WebP from disk |
+| **Shape** | Rect or ellipse with fill (solid/linear/radial gradient), stroke, border-radius |
+| **Text** | Styled text — family / size / weight / letter-spacing / color / align |
 
-### Quality tiers
+Every layer has:
 
-| Mode | Status | Renderer | For |
-|---|---|---|---|
-| **Lite** | ✅ **built** | Native wgpu (Metal) | HTML/image panels + shapes in 3D, keyframes, camera moves — Apple-keynote-style demos |
-| Standard | planned | wgpu + glTF/PBR | Real 3D product models with materials |
-| Pro | planned | Cycles/Blender bridge | Photoreal / path-traced cinematics |
+- 2D transform: `x`, `y`, `rotation`, `scale_x`, `scale_y`
+- Optional 2.5D tilt: `rotate_x`, `rotate_y`, `perspective` (for floating-card / Apple-keynote vibes)
+- `opacity`, `blend_mode` (CSS mix-blend-mode)
+- Effects: stacked box-shadows (Figma-style drop shadows), CSS-filter blur
+- Per-property **keyframe tracks** with cubic-bezier handles (Blender-grade F-curves)
 
-You asked for all three eventually; **Lite is implemented now.**
+Claude controls all of it atomically via MCP. ~40 tools.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────┐   stdio MCP    ┌────────────────────────────────────┐
-│  Claude Desktop  │ ◄────────────► │            Juicer.app              │
-└─────────────────┘  (juicer --mcp) │  ┌──────────────────────────────┐  │
-                                    │  │ Tauri 2 (Rust)                │  │
-                                    │  │  • Scene model (scene.rs)     │  │
-                                    │  │  • Keyframe engine (anim.rs)  │  │
-                                    │  │  • wgpu renderer (render/)    │  │
-                                    │  │  • MCP server (mcp.rs)        │  │
-                                    │  └──────────────────────────────┘  │
-                                    │  React UI in native WebView         │
-                                    └──────────────────────────────────┘
-                                          │                    │
-                              juicer-html-capture        juicer-encoder
-                              (WKWebView → PNG)        (PNG seq → MP4, AVFoundation)
+┌─────────────────┐   stdio MCP    ┌───────────────────────────────────────┐
+│  Claude Desktop  │ ◄────────────► │            Juicer.app                 │
+└─────────────────┘  (juicer --mcp) │  ┌─────────────────────────────────┐  │
+                                    │  │ Tauri 2 (Rust)                  │  │
+                                    │  │  • Scene model (scene.rs)       │  │
+                                    │  │  • Keyframe engine (anim.rs)    │  │
+                                    │  │  • Renderer IPC (renderer.rs)   │  │
+                                    │  │  • MCP server (mcp.rs)          │  │
+                                    │  └─────────────────────────────────┘  │
+                                    │  React UI in native WebView           │
+                                    │  (viewport = iframe of renderer.html) │
+                                    └────────────────┬──────────────────────┘
+                                                     │ stdio JSON
+                                                     ▼
+                            ┌────────────────────────────────────────────┐
+                            │  juicer-frame-renderer (Swift, long-lived) │
+                            │  one offscreen WKWebView + renderer.html;  │
+                            │  applies per-frame styles, snapshots PNG   │
+                            └────────────────┬───────────────────────────┘
+                                             │
+                                             ▼ frame PNGs
+                                  juicer-encoder (AVFoundation → MP4)
 ```
 
-Everything in one process. Claude talks to the scene **directly** — no IPC hop, no socket bridge.
+The same `renderer.html` runs in two places:
 
-| Concern | Blender's subsystem | Juicer's native equivalent |
-|---|---|---|
-| 3D rendering | Eevee/OpenGL | `wgpu` (Metal) — `render/mod.rs` + `shader.wgsl` |
-| Keyframes / F-curves | Animation system | `anim.rs` — tracks, easing, interpolation |
-| Object/data model | DNA/RNA | `scene.rs` — elements, camera, lights |
-| Python API + addons | bpy | MCP server — Claude is the scripting layer |
-| HTML → texture | (none) | `juicer-html-capture` (native WKWebView) |
-| Video output | ffmpeg | `juicer-encoder` (native AVFoundation, no ffmpeg) |
+1. **As an iframe in the Tauri UI** — that's your live preview, byte-identical to what the recorded MP4 will look like.
+2. **In the offscreen WKWebView** held by `juicer-frame-renderer` — captures one PNG per frame for the MP4.
+
+Single source of truth: a `scene.json` per project, autosaved on every mutation.
 
 ---
 
-## Prerequisites
+## Prerequisites (macOS only)
 
 ```bash
 # Xcode CLI tools ONLY — you do NOT need the full Xcode app
@@ -70,7 +79,7 @@ cargo install tauri-cli --version "^2.0"
 brew install node pnpm
 ```
 
-That's the whole toolchain. No Blender, no Python.
+That's the whole toolchain.
 
 ---
 
@@ -79,7 +88,7 @@ That's the whole toolchain. No Blender, no Python.
 ```bash
 pnpm install
 
-# Build the two native helper binaries (compiles in ~5s with swiftc)
+# Build the three native helper binaries (compile in ~5s with swiftc)
 pnpm --filter juicer-desktop helpers
 
 # Dev mode (hot-reload UI + Rust)
@@ -95,7 +104,7 @@ pnpm build
 
 ## Connect Claude Desktop
 
-The MCP server *is* the app binary, run with `--mcp`. Add to
+The MCP server is the app binary, run with `--mcp`. Add to
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
@@ -109,90 +118,60 @@ The MCP server *is* the app binary, run with `--mcp`. Add to
 }
 ```
 
-During dev, point at `target/debug/juicer` (run `pnpm dev` once to build it).
-
-No Python, no addon install, no port juggling — the thing Blender-MCP makes painful.
+During dev, point at `apps/desktop/src-tauri/target/debug/juicer` (run `pnpm dev` once to build it).
 
 ---
 
 ## Using it with Claude
 
-- *"Set up a dark demo layout titled 'Acme' with accent #6644ff"* → `arrange_demo_layout`
-- *"Add a plane and put my pricing-card PNG on it at /tmp/card.png"*
-- *"Keyframe the title: frame 1 at y=-2 opacity 0, frame 30 at y=0 opacity 1, ease-out"*
-- *"Dolly the camera from z=8 to z=4 over the first 60 frames"* → `set_keyframe_camera`
-- *"Render frames 1–300 to /tmp/demo.mp4"* → `render_animation`
+```
+"Add a Tailwind pricing card as an HTML layer"
+"Add a soft drop-shadow rectangle behind it"
+"Animate the card y from -300 to 0 over frames 0..30 with an ease-back overshoot"
+"Tilt the card rotate_y to 15° on frame 60"
+"Render the MP4"
+```
 
-### MCP tools
+### MCP tools (highlights)
 
-| Tool | Action |
-|---|---|
-| `create_project` / `open_project` | Make/open a project folder (see **Projects** below) |
-| `save_project` / `get_project` | Save scene / show project paths |
-| `get_scene` | Full scene JSON — elements, keyframes, camera, render settings |
-| `capture_html` | Render HTML/CSS (Tailwind, fonts, icons auto-injected) → transparent PNG → plane |
-| `add_element` | plane / box / sphere (plane + `image_path` = your HTML/brand visual) |
-| `update_element` | Move, rotate, scale, recolor, opacity, swap image |
-| `remove_element` | Delete |
-| `set_keyframe` | Keyframe position/rotation/scale/opacity with easing |
-| `set_camera` / `set_keyframe_camera` | Static or animated camera |
-| `set_render_settings` | Resolution, fps, frame range, background |
-| `render_frame` | Single PNG via wgpu (returned inline + saved to renders/) |
-| `render_animation` | Full MP4 via wgpu + native encoder |
-| `arrange_demo_layout` | One-shot starter composition |
+**Layer CRUD:** `add_html_layer`, `add_image_layer`, `add_shape_layer`, `add_text_layer`, `remove_layer`, `duplicate_layer`, `reorder_layer`, `list_layers`, `get_layer`, `rename_layer`
+
+**Per-property setters:** `set_transform`, `set_opacity`, `set_size`, `set_border_radius`, `set_shadow`, `clear_shadows`, `set_blur`, `set_fill`, `set_stroke`, `set_text`, `set_font`, `set_html`, `set_image_src`, `set_blend_mode`, `set_visible`
+
+**Keyframing:** `set_keyframe(id, frame, property, value, easing | bezier)` — easings: `linear` / `step` / `ease-in` / `ease-out` / `ease-in-out` / `ease-back`, or pass `bezier: [p1x, p1y, p2x, p2y]` for any custom Blender-style F-curve. `remove_keyframe`, `clear_track`, `copy_track`.
+
+**Animatable properties:** `x`, `y`, `rotation`, `scale_x`, `scale_y`, `rotate_x`, `rotate_y`, `perspective`, `opacity`, `width`, `height`, `border_radius`, `shadow_offset_x/y`, `shadow_blur`, `shadow_spread`, `shadow_color`, `filter_blur`, `fill_color`, `text_content` (step-only), `font_size`.
+
+**Canvas / timeline:** `set_canvas`, `set_duration`
+
+**Render:** `render_frame(frame)` returns an inline PNG + saves to disk; `render_animation` produces an MP4. `evaluate_at(frame)` returns the resolved per-layer CSS without rendering.
+
+**Project:** `create_project`, `open_project`, `save_project`, `get_project`
 
 ---
 
-## Projects — where your work lives
-
-Everything is saved to a **project folder** (no more `/tmp` hunting):
+## Projects on disk
 
 ```
 ~/Movies/Juicer/<name>/
-  scene.json     ← the whole scene; auto-saved after every change
-  assets/        ← captured HTML PNGs, imported images
+  scene.json     ← the whole scene; auto-saved after every mutation
+  assets/        ← imported images / captured HTML PNGs
   renders/       ← frame PNGs and exported MP4s
 ```
 
-On first launch Juicer opens-or-creates a **Default** project, so there's
-always a home on disk and a restart restores your scene. Ask Claude to
-*"create a project called Acme"* (`create_project`) to start a clean one.
-`render_frame`/`render_animation` default their output into `renders/`, and
-`capture_html` writes into `assets/`.
-
-## Tailwind & web libraries
-
-`capture_html` auto-injects the common web stack, so you can send raw
-component markup and it renders correctly:
-
-- **Tailwind** — the v4 browser build is **vendored locally**
-  (`src-tauri/resources/tailwind.js`) and bundled into the app, so captures
-  work **fully offline**; it copies next to each capture and loads via a
-  relative path (falls back to the CDN only if the local file is missing)
-- **Google Fonts** (default Inter; override with `font` — needs network,
-  degrades to system fonts offline)
-- **Lucide** icons, **Font Awesome**, **Animate.css**
-- Anything else via the `libraries` array (CDN URLs)
-
-```
-"Capture this and drop it into the scene:
- <div class='bg-gray-900 text-white rounded-2xl p-8'>
-   <h1 class='text-4xl font-bold text-violet-400'>Acme</h1>
- </div>"
-```
-
-Captures render on a **transparent background**, so cards composite cleanly
-onto 3D planes.
+On first launch Juicer opens-or-creates a **Default** project, so there's always a home on disk and a restart restores your scene. Ask Claude to *"create a project called Acme"* to start a clean one.
 
 ---
 
-## HTML → 3D workflow
+## Why layers can't break each other
 
-1. Paste your component's HTML in the **HTML → 3D Plane** panel
-2. **Capture** → `juicer-html-capture` renders it via native WKWebView (full CSS3, fonts, gradients)
-3. The PNG is applied as a GPU texture on a new plane
-4. Position / keyframe it (panel or Claude)
-5. **Render MP4**
+The thing you'd worry about: a Tailwind layer with `*{color:red}` clobbering another layer's styling. Doesn't happen. Each HTML layer is rendered inside an `<iframe srcdoc>` with its own browsing context. Styles inside the iframe stay inside the iframe. Outside layers (image, shape, text) are siblings in the parent DOM. They can't reach each other.
+
+---
+
+## Tailwind & web libraries (HTML layers)
+
+`add_html_layer` injects Tailwind, Google Fonts (Inter by default), Lucide, Animate.css, and Font Awesome automatically into the iframe srcdoc. Paste raw component markup with Tailwind classes and it renders correctly. Tailwind v4 browser build is vendored at `apps/desktop/src-tauri/resources/tailwind.js`, so captures work fully offline.
 
 ---
 
@@ -200,36 +179,42 @@ onto 3D planes.
 
 ```
 apps/desktop/
-  src/                      React UI (Tauri WebView)
+  src/                         React UI (Tauri WebView)
+    components/                Toolbar, Sidebar (layers), Properties, Viewport, Timeline, HtmlImporter
+    store/scene.ts             Zustand layer-based store
   src-tauri/
     src/
-      scene.rs              scene data model
-      anim.rs               keyframe tracks + easing
-      render/
-        mod.rs              wgpu offscreen renderer
-        mesh.rs             plane / box / sphere primitives
-        shader.wgsl         vertex+fragment shader
-      video.rs              frame sequence → MP4 orchestration
-      mcp.rs                MCP stdio server (Claude)
-      html_capture.rs       calls juicer-html-capture
-      lib.rs                Tauri commands + app state
+      scene.rs                 Scene + Layer (2.5D) data model, evaluate_at()
+      anim.rs                  Keyframe tracks + cubic-bezier easing + OKLCH color lerp
+      renderer.rs              Rust ↔ juicer-frame-renderer IPC over stdio
+      mcp.rs                   MCP stdio server; wraps the shared dispatcher
+      lib.rs                   AppState + dispatch_tool (single source of truth for both MCP and UI)
+      html_capture.rs          wrap_html + one-shot WKWebView capture
+      video.rs                 Frame PNGs → MP4 via juicer-encoder
+      project.rs               ~/Movies/Juicer/<name>/ + autosave
+    resources/
+      tailwind.js              vendored Tailwind (offline)
+      renderer.html            DOM shell loaded by the helper + UI iframe
+      runtime.js               applyState bridge inside renderer.html
   tools/
-    html-capture/main.swift native WKWebView → PNG
-    encoder/main.swift       native AVFoundation → MP4
-    build-helpers.sh
+    html-capture/main.swift    juicer-html-capture (one-shot HTML → transparent PNG)
+    frame-renderer/main.swift  juicer-frame-renderer (long-lived WKWebView + JSON-RPC)
+    encoder/main.swift         juicer-encoder (PNG sequence → MP4 via AVFoundation)
+
+blender-fork/                  Reference-only — see blender-fork/README.md (NOT built)
 ```
 
 ---
 
 ## Roadmap
 
-- [x] Projects on disk (scene.json + assets/ + renders/), auto-save
-- [x] Tailwind/fonts/icons in capture, bundled offline
-- [x] Live auto-preview after edits + timeline scrub
-- [x] Timeline strip with keyframe markers
-- [ ] Draggable keyframes + curve editor in the timeline
-- [ ] On-canvas transform gizmos
-- [ ] Real-time interactive viewport (render-to-surface, not on-demand)
-- [ ] Standard mode: glTF model import + PBR materials
-- [ ] Pro mode: optional Cycles bridge for photoreal stills
-- [ ] Windows/Linux: swap WKWebView capture for headless-chromium, AVFoundation for ffmpeg
+- [x] Projects on disk + autosave
+- [x] HTML / Image / Shape / Text layers, 2.5D transforms, drop shadows, blur, gradients
+- [x] Blender-grade cubic-bezier F-curve easing
+- [x] OKLCH color interpolation (no muddy RGB midpoints)
+- [x] Live preview iframe = recorded MP4 (single render path)
+- [x] Atomic MCP control surface (~40 tools)
+- [ ] On-canvas transform gizmos (move/rotate/scale handles)
+- [ ] F-curve graph editor in the timeline
+- [ ] Path / vector layers + boolean ops
+- [ ] Windows/Linux: swap WKWebView for headless-chromium, AVFoundation for ffmpeg

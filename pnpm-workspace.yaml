@@ -1,6 +1,9 @@
 packages:
   - 'apps/*'
 
+allowBuilds:
+  esbuild: set this to true or false
+
 # Allow these dependencies to run their install/build scripts.
 # pnpm 10+ blocks postinstall scripts by default; esbuild needs its
 # native binary fetched, so it must be explicitly approved.
